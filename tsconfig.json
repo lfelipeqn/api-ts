@@ -20,7 +20,8 @@
     "strictBindCallApply": true,
     "strictPropertyInitialization": true,
     "noImplicitThis": true,
-    "alwaysStrict": true
+    "alwaysStrict": true,
+    "types": ["node", "express", "multer"],
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "**/*.spec.ts"]
