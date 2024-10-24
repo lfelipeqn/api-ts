@@ -159,23 +159,14 @@ export class Brand extends Model<BrandAttributes, BrandCreationAttributes> {
       // Create new file
       const newFile = await File.create({
         name: file.originalname,
-        original_name: file.originalname,
         location: `brands/${this.id}`,
-        mime_type: file.mimetype,
-        size: file.size,
-        metadata: {
-          uploadedBy: 'brand',
-          brandId: this.id,
-          originalName: file.originalname,
-          contentType: file.mimetype
-        }
       }, { transaction });
 
       // Store the file in Google Cloud Storage
       await newFile.storeFile(file);
 
       // Generate image sizes if it's an image
-      if (file.mimetype.startsWith('image/')) {
+      if (this.isImage(file.originalname)) {
         await newFile.generateImageSizes();
       }
 
@@ -209,5 +200,9 @@ export class Brand extends Model<BrandAttributes, BrandCreationAttributes> {
       url: file.getUrl(),
       sizes: file.getImageSizesUrl()
     };
+  }
+
+  private isImage(filename: string): boolean {
+    return /\.(jpg|jpeg|png|gif|webp)$/i.test(filename);
   }
 }

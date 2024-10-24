@@ -27,6 +27,8 @@ import { DataSheetField } from './DataSheetField';
 import { DataSheetValue } from './DataSheetValue';
 import path from 'path';
 
+import { FileWithDetails, ImageSizes, FileWithPrincipal } from '../types/file';
+
 interface DataSheetResponse {
   id: number;
   name: string;
@@ -41,39 +43,6 @@ interface DataSheetResponse {
 
 interface ProductInfoWithDataSheet extends Omit<ProductInfo, 'data_sheet'> {
   data_sheet?: DataSheetResponse;
-}
-
-// Enhanced interfaces
-interface ProductFile {
-  id: number;
-  product_id: number;
-  file_id: number;
-  principal: boolean;
-  created_at?: Date;
-  updated_at?: Date;
-}
-
-interface FileWithDetails {
-  id: number;
-  name: string;
-  location: string;
-  mime_type: string;
-  size: number;
-  original_name: string;
-  metadata?: Record<string, any> | null;
-  created_at: Date;
-  updated_at: Date;
-  products_files?: ProductFile;
-  url: string;
-  sizes: ImageSizes;
-}
-
-interface ImageSizes {
-  xs: string;
-  sm: string;
-  md: string;
-  lg: string;
-  original: string;
 }
 
 interface DataSheetWithFields extends DataSheet {
@@ -242,12 +211,30 @@ export class Product extends Model<ProductAttributes, ProductCreationAttributes>
   // Association mixins
   declare getBrand: BelongsToGetAssociationMixin<Brand>;
   declare getProductLine: BelongsToGetAssociationMixin<ProductLine>;
-  declare getFiles: BelongsToManyGetAssociationsMixin<File>;
   declare addFile: BelongsToManyAddAssociationMixin<File, number>;
   declare removeFile: BelongsToManyRemoveAssociationMixin<File, number>;
   declare hasFile: BelongsToManyHasAssociationMixin<File, number>;
   declare getPriceHistories: HasManyGetAssociationsMixin<PriceHistory>;
   declare getStockHistories: HasManyGetAssociationsMixin<StockHistory>;
+
+  async getFiles(): Promise<FileWithPrincipal[]> {
+    return File.getByProductId(this.id);
+  }
+
+  async getInfo(): Promise<ProductInfo> {
+    return this.convertToProductInfo(this);
+  }
+
+  async getImagesWithPrincipal(): Promise<{
+    principal: FileWithDetails | undefined;
+    others: FileWithDetails[];
+  }> {
+    const images = await this.getProductImages();
+    return {
+      principal: images.find(img => img.products_files?.principal),
+      others: images.filter(img => !img.products_files?.principal)
+    };
+  }
   
   toJSON(): EnsureProductInfo<ProductInfo> {
     const json = super.toJSON();
@@ -282,7 +269,7 @@ export class Product extends Model<ProductAttributes, ProductCreationAttributes>
       as: 'productLine',
       targetKey: 'id'
     });
-  
+
     Product.belongsToMany(models.File, {
       through: 'products_files',
       foreignKey: 'product_id',
@@ -309,15 +296,18 @@ export class Product extends Model<ProductAttributes, ProductCreationAttributes>
   private async convertToProductInfo(product: Pick<Product, keyof ProductAttributes>): Promise<ProductInfo> {
     // If it's this instance, use instance methods
     if (product instanceof Product) {
+      const files = await File.getByProductId(product.id);
+      const processedFiles = await Promise.all(
+        files.map(file => this.getProcessedFileDetails(file))
+      );
+  
       return {
         ...product.toJSON(),
         current_price: await product.getCurrentPrice(),
         stock: await product.getCurrentStock(),
         brand: await product.getBrand(),
         productLine: await product.getProductLine(),
-        files: await product.getProductFiles().then(files => 
-          Promise.all(files.map(file => this.getProcessedFileDetails(file)))
-        )
+        files: processedFiles
       };
     }
   
@@ -337,16 +327,20 @@ export class Product extends Model<ProductAttributes, ProductCreationAttributes>
     } as unknown as ProductInfo;
   
     // Load basic associations if needed
-    const brandPromise = Brand.findByPk(product.brand_id);
-    const productLinePromise = ProductLine.findByPk(product.product_line_id);
-  
-    const [brand, productLine] = await Promise.all([
-      brandPromise,
-      productLinePromise
+    const [brand, productLine, files] = await Promise.all([
+      Brand.findByPk(product.brand_id),
+      ProductLine.findByPk(product.product_line_id),
+      File.getByProductId(product.id)
     ]);
+  
+    // Process files
+    const processedFiles = await Promise.all(
+      (files || []).map(file => this.getProcessedFileDetails(file))
+    );
   
     productData.brand = brand || undefined;
     productData.productLine = productLine || undefined;
+    productData.files = processedFiles;
   
     return productData;
   }
@@ -473,26 +467,8 @@ export class Product extends Model<ProductAttributes, ProductCreationAttributes>
     return Product;
   }
 
-  async processFileDetails(file: File): Promise<FileWithDetails> {
-    const fileData = file.toJSON();
-    const imageSizes = file.getImageSizesUrl();
-  
-    return {
-      ...fileData,
-      url: file.getUrl(),
-      sizes: this.processImageSizes(imageSizes),
-      products_files: (file as any).products_files || undefined
-    };
-  }
-
-  async getProductFiles(): Promise<File[]> {
-    return this.getFiles({
-      attributes: ['id', 'name', 'location', 'mime_type', 'size', 'original_name'],
-      include: [{
-        association: 'products_files',
-        attributes: ['principal']
-      }]
-    } as FileAssociationOptions);
+  async getProductFiles(): Promise<FileWithPrincipal[]> {
+    return File.getByProductId(this.id);
   }
 
   private formatPrice(price: number): number {
@@ -546,34 +522,25 @@ export class Product extends Model<ProductAttributes, ProductCreationAttributes>
   ): Promise<File> {
     try {
       const newFile = await File.create({
-        name: this.generateFileName(file.originalname), // Generate a safe filename
-        original_name: file.originalname,
+        name: this.generateFileName(file.originalname),
         location: `products/${this.id}`,
-        mime_type: file.mimetype,
-        size: file.size,
-        metadata: {
-          uploadedBy: 'product',
-          productId: this.id,
-          originalName: file.originalname,
-          contentType: file.mimetype
-        }
       }, { transaction });
-  
+
       await newFile.storeFile(file);
       
-      if (file.mimetype.startsWith('image/')) {
+      if (this.isImage(file.originalname)) {
         await newFile.generateImageSizes();
       }
-  
+
       await this.addFile(newFile, {
         through: { principal: isPrincipal },
         transaction
       });
-  
+
       if (isPrincipal) {
         await this.updatePrincipalFile(newFile.id, transaction);
       }
-  
+
       await this.clearCache();
       return newFile;
     } catch (error) {
@@ -594,104 +561,12 @@ export class Product extends Model<ProductAttributes, ProductCreationAttributes>
     return `${safeName}-${timestamp}${extension}`;
   }
 
+  private isImage(filename: string): boolean {
+    return /\.(jpg|jpeg|png|gif|webp)$/i.test(filename);
+  }
+
   private async clearCache(): Promise<void> {
     await this.clearAllCache();
-  }
-  /**
- * Enhanced getInfo method with proper caching
- */
-  async getInfo(): Promise<ProductInfoWithDataSheet> {
-    try {
-      const cache = Cache.getInstance();
-      const cacheKey = `${Product.CACHE_KEY_PREFIX}${this.id}:info`;
-      
-      const cachedInfo = await cache.get<ProductInfoWithDataSheet>(cacheKey);
-      if (cachedInfo) {
-        return cachedInfo;
-      }
-  
-      // Get base product info
-      const [currentPrice, currentStock] = await Promise.all([
-        this.getCurrentPrice(),
-        this.getCurrentStock()
-      ]);
-  
-      // Create base product info
-      const productInfo: Partial<ProductInfoWithDataSheet> = {
-        ...this.toJSON(),
-        current_price: currentPrice,
-        stock: currentStock,
-      };
-  
-      // Load associations in parallel
-      const [brand, productLine, files, dataSheet] = await Promise.all([
-        this.getBrand().catch(() => null),
-        this.getProductLine().catch(() => null),
-        this.getFiles({
-          attributes: ['id', 'name', 'location', 'mime_type', 'size', 'original_name'],
-          include: [{
-            association: 'products_files',
-            attributes: ['principal']
-          }]
-        }).catch(() => []),
-        DataSheet.findOne({
-          where: { product_id: this.id },
-          include: [{
-            model: DataSheetField,
-            as: 'dataSheetFields',
-            include: [{
-              model: DataSheetValue,
-              as: 'DataSheetValue',
-              attributes: ['value'],
-              where: { data_sheet_id: { [Op.col]: 'DataSheet.id' } }
-            }]
-          }]
-        } as any).catch(() => null) as Promise<DataSheetWithFields | null>
-      ]);
-  
-      // Assign associations
-      if (brand) productInfo.brand = brand;
-      if (productLine) productInfo.productLine = productLine;
-  
-      // Process files
-      if (files && files.length > 0) {
-        productInfo.files = await Promise.all(
-          files.map(file => this.processFileDetails(file))
-        );
-  
-        const principalFile = files.find(file => 
-          (file as any).products_files?.principal
-        );
-        
-        if (principalFile) {
-          productInfo.file_url = principalFile.getUrl();
-          const imageSizes = principalFile.getImageSizesUrl();
-          productInfo.images = this.processImageSizes(imageSizes);
-        }
-      }
-  
-      // Process data sheet
-      if (dataSheet && dataSheet.dataSheetFields) {
-        productInfo.data_sheet = {
-          id: dataSheet.id,
-          name: dataSheet.name,
-          year: dataSheet.year,
-          fields: dataSheet.dataSheetFields.map(field => ({
-            id: field.id,
-            name: field.field_name,
-            type: field.type,
-            value: field.DataSheetValue?.value || ''
-          }))
-        };
-      }
-  
-      await cache.set(cacheKey, productInfo, Product.CACHE_DURATION);
-  
-      return productInfo as ProductInfoWithDataSheet;
-    } catch (error) {
-      console.error(`Error getting product info for ${this.id}:`, error);
-      throw new Error(`Failed to get product info: ${(error as Error).message}`);
-    }
   }
   // Enhanced similar products implementation
   // Update your similarProducts method if you still need it
@@ -878,66 +753,66 @@ async similarProducts(limit: number = 5): Promise<Product[]> {
       }
     }
 
-    async updateAgencyStock(
-      agencyId: number,
-      quantity: number,
-      userId: number,
-      type: 'IN' | 'OUT' | 'ADJUST' = 'ADJUST',
-      reference?: string,
-      transaction?: Transaction
-    ): Promise<void> {
-      const t = transaction || await this.sequelize!.transaction();
-    
-      try {
-        const agencyProduct = await AgencyProduct.findOne({
-          where: {
-            product_id: this.id,
-            agency_id: agencyId
-          },
-          transaction: t
-        });
-    
-        if (!agencyProduct && quantity < 0) {
-          throw new InsufficientStockError(this.id, quantity, 0);
-        }
-    
-        const previousStock = agencyProduct?.current_stock || 0;
-        const newStock = previousStock + quantity;
-    
-        if (newStock < 0) {
-          throw new InsufficientStockError(this.id, quantity, previousStock);
-        }
-    
-        await AgencyProduct.upsert({
+  async updateAgencyStock(
+    agencyId: number,
+    quantity: number,
+    userId: number,
+    type: 'IN' | 'OUT' | 'ADJUST' = 'ADJUST',
+    reference?: string,
+    transaction?: Transaction
+  ): Promise<void> {
+    const t = transaction || await this.sequelize!.transaction();
+  
+    try {
+      const agencyProduct = await AgencyProduct.findOne({
+        where: {
           product_id: this.id,
-          agency_id: agencyId,
-          current_stock: newStock,
-          state: true
-        }, { transaction: t });
-    
-        await StockHistory.create({
-          quantity,
-          previous_stock: previousStock,
-          current_stock: newStock,
-          type,
-          reference,
-          product_id: this.id,
-          agency_id: agencyId,
-          user_id: userId
-        } satisfies StockHistoryCreationAttributes, { transaction: t });
-    
-        if (!transaction) {
-          await t.commit();
-        }
-    
-        await this.clearAllCache();
-      } catch (error) {
-        if (!transaction) {
-          await t.rollback();
-        }
-        throw error;
+          agency_id: agencyId
+        },
+        transaction: t
+      });
+  
+      if (!agencyProduct && quantity < 0) {
+        throw new InsufficientStockError(this.id, quantity, 0);
       }
+  
+      const previousStock = agencyProduct?.current_stock || 0;
+      const newStock = previousStock + quantity;
+  
+      if (newStock < 0) {
+        throw new InsufficientStockError(this.id, quantity, previousStock);
+      }
+  
+      await AgencyProduct.upsert({
+        product_id: this.id,
+        agency_id: agencyId,
+        current_stock: newStock,
+        state: true
+      }, { transaction: t });
+  
+      await StockHistory.create({
+        quantity,
+        previous_stock: previousStock,
+        current_stock: newStock,
+        type,
+        reference,
+        product_id: this.id,
+        agency_id: agencyId,
+        user_id: userId
+      }, { transaction: t });
+  
+      if (!transaction) {
+        await t.commit();
+      }
+  
+      await this.clearAllCache();
+    } catch (error) {
+      if (!transaction) {
+        await t.rollback();
+      }
+      throw error;
     }
+  }
 
   /**
    * Get current stock from cache or database
@@ -973,19 +848,76 @@ async similarProducts(limit: number = 5): Promise<Product[]> {
     }
   }
   
-  
-  async getStockByAgency(agencyId: number): Promise<number> {
-    const agencyProduct = await AgencyProduct.findOne({
-      where: {
-        product_id: this.id,
-        agency_id: agencyId,
-        state: true
-      }
-    });
-  
-    return agencyProduct?.current_stock || 0;
+  async getTotalStock(): Promise<number> {
+    try {
+      const result = await AgencyProduct.sum('current_stock', {
+        where: {
+          product_id: this.id,
+          state: true
+        }
+      });
+
+      return result || 0;
+    } catch (error) {
+      console.error('Error getting total stock:', error);
+      throw error;
+    }
   }
 
+  // Method to get detailed stock information
+  async getStockSummary(): Promise<{
+    total_stock: number;
+    agencies_count: number;
+    agencies_with_stock: number;
+  }> {
+    try {
+      const [totalStock, agenciesData] = await Promise.all([
+        this.getTotalStock(),
+        AgencyProduct.findAll({
+          where: {
+            product_id: this.id,
+            state: true
+          },
+          attributes: [
+            [this.sequelize!.fn('COUNT', this.sequelize!.col('*')), 'total_agencies'],
+            [this.sequelize!.fn('COUNT', 
+              this.sequelize!.literal('CASE WHEN current_stock > 0 THEN 1 END')
+            ), 'agencies_with_stock']
+          ],
+          raw: true
+        })
+      ]);
+
+      const agencyCounts = agenciesData[0] as any;
+
+      return {
+        total_stock: totalStock,
+        agencies_count: parseInt(agencyCounts.total_agencies) || 0,
+        agencies_with_stock: parseInt(agencyCounts.agencies_with_stock) || 0
+      };
+    } catch (error) {
+      console.error('Error getting stock summary:', error);
+      throw error;
+    }
+  }
+  
+  async getStockByAgency(agencyId: number): Promise<number> {
+    try {
+      const result = await AgencyProduct.findOne({
+        where: {
+          product_id: this.id,
+          agency_id: agencyId,
+          state: true
+        },
+        attributes: ['current_stock']
+      });
+
+      return result?.current_stock || 0;
+    } catch (error) {
+      console.error('Error getting stock by agency:', error);
+      throw error;
+    }
+  }
   /**
    * Clear all related cache entries for this product
    */
@@ -1114,7 +1046,7 @@ static async searchWithCache(query: string, options: {
  * Replace existing file
  */
   async replaceProductFile(
-    fileId: number, 
+    fileId: number,
     newFile: Express.Multer.File,
     transaction?: Transaction
   ): Promise<File> {
@@ -1123,33 +1055,19 @@ static async searchWithCache(query: string, options: {
       if (!existingFile) {
         throw new Error('File not found');
       }
-  
+
       const hasFile = await this.hasFile(existingFile);
       if (!hasFile) {
         throw new Error('File is not associated with this product');
       }
-  
-      // Update the file properties
-      existingFile.original_name = newFile.originalname;
-      existingFile.mime_type = newFile.mimetype;
-      existingFile.size = newFile.size;
-      existingFile.metadata = {
-        ...existingFile.metadata,
-        lastUpdated: new Date().toISOString(),
-        originalName: newFile.originalname,
-        contentType: newFile.mimetype
-      };
-  
+
       await existingFile.replaceFile(newFile, transaction);
-      await existingFile.save({ transaction });
-  
-      // Regenerate image sizes if it's an image
-      if (newFile.mimetype.startsWith('image/')) {
+      
+      if (this.isImage(newFile.originalname)) {
         await existingFile.generateImageSizes();
       }
-  
+
       await this.clearAllCache();
-  
       return existingFile;
     } catch (error:any) {
       if (isSequelizeError(error)) {
@@ -1200,20 +1118,17 @@ static async searchWithCache(query: string, options: {
     return result?.[0]?.total_stock || 0;
   }
 
-  async getProductImages(): Promise<{
-    principal?: FileWithDetails;
-    others: FileWithDetails[];
-  }> {
-    const files = await this.getProductFiles();
+  async getProductImages(): Promise<FileWithDetails[]> {
+    // Get files using File model's static method
+    const files = await File.getByProductId(this.id);
     
-    const processedFiles = await Promise.all(
-      files.map(file => this.processFileDetails(file))
+    // Create a File instance for processing
+    const fileInstance = new File();
+
+    // Process all files
+    return Promise.all(
+      files.map(file => fileInstance.processFileDetails(file))
     );
-  
-    return {
-      principal: processedFiles.find(file => file.products_files?.principal),
-      others: processedFiles.filter(file => !file.products_files?.principal)
-    };
   }
 
   private processImageSizes(imageSizes: Record<string, string>): ImageSizes {
@@ -1228,74 +1143,60 @@ static async searchWithCache(query: string, options: {
 
   async associateFiles(
     files: Express.Multer.File[],
-    principalIndex: number = 0,
-    transaction?: Transaction
+    principalIndex: number = 0
   ): Promise<File[]> {
-    const t = transaction || await this.sequelize!.transaction();
-  
+    const t = await this.sequelize!.transaction();
+    
     try {
       const uploadedFiles = await Promise.all(
-        files.map((file, index) => 
-          this.uploadAndAssociateFile(
-            file,
-            index === principalIndex,
-            t
-          )
-        )
+        files.map(async (file, index) => {
+          const newFile = await File.create({
+            name: this.generateFileName(file.originalname),
+            location: `products/${this.id}`,
+          }, { transaction: t });
+
+          await newFile.storeFile(file);
+          
+          if (this.isImage(file.originalname)) {
+            await newFile.generateImageSizes();
+          }
+
+          await this.addFile(newFile, {
+            through: { principal: index === principalIndex },
+            transaction: t
+          });
+
+          return newFile;
+        })
       );
-  
-      if (!transaction) {
-        await t.commit();
-      }
-  
+
+      await t.commit();
       return uploadedFiles;
     } catch (error) {
-      if (!transaction) {
-        await t.rollback();
-      }else if (isSequelizeError(error)) {
-        console.error(`Database error: ${error.name}: ${error.message}`);
-      }
+      await t.rollback();
       throw error;
     }
   }
 
   async getPrincipalImage(): Promise<FileWithDetails | undefined> {
     const images = await this.getProductImages();
-    return images.principal;
+    return images.find(img => img.products_files?.principal);
   }
 
-  private async getProcessedFileDetails(file: File): Promise<FileWithDetails> {
-    const fileJson = file.toJSON();
-    const throughData = (file as any).products_files;
-    const sizes = file.getImageSizesUrl();
-  
-    const fileDetails: FileWithDetails = {
-      ...fileJson,
-      url: file.getUrl(),
-      sizes: {
-        xs: sizes['xs'] || '',
-        sm: sizes['sm'] || '',
-        md: sizes['md'] || '',
-        lg: sizes['lg'] || '',
-        original: sizes['original'] || ''
-      },
-      products_files: throughData,
-      metadata: fileJson.metadata || null // Ensure metadata is either Record<string, any> or null
-    };
-  
-    return fileDetails;
+  private async getProcessedFileDetails(file: FileWithPrincipal): Promise<FileWithDetails> {
+    // Create a File instance to use its processFileDetails method
+    const fileInstance = new File();
+    return fileInstance.processFileDetails(file);
   }
 
   async getAllImages(): Promise<FileWithDetails[]> {
     const images = await this.getProductImages();
-    return [
-      ...(images.principal ? [images.principal] : []),
-      ...images.others
-    ];
-  }
-
-  private isImageFile(file: File): boolean {
-    return file.mime_type.startsWith('image/');
+    return images.sort((a, b) => {
+      // Sort principal image first
+      if (a.products_files?.principal) return -1;
+      if (b.products_files?.principal) return 1;
+      return 0;
+    });
   }
 
 }

@@ -4,23 +4,20 @@ import { Product } from './Product';
 
 interface AgencyProductAttributes {
   id: number;
-  agency_id: number;
-  product_id: number;
   current_stock: number;
   state: boolean;
-  created_at: Date;
-  updated_at: Date;
+  product_id: number;
+  agency_id: number;
 }
-
 interface AgencyProductCreationAttributes
-  extends Omit<AgencyProductAttributes, 'id' | 'created_at' | 'updated_at'> {}
+  extends Omit<AgencyProductAttributes, 'id'> {}
 
 export class AgencyProduct extends Model<AgencyProductAttributes, AgencyProductCreationAttributes> {
-  public id!: number;
-  public agency_id!: number;
-  public product_id!: number;
-  public current_stock!: number;
-  public state!: boolean;
+  declare id: number;
+  declare current_stock: number;
+  declare state: boolean;
+  declare product_id: number;
+  declare agency_id: number;
 
   public readonly created_at!: Date;
   public readonly updated_at!: Date;
@@ -69,20 +66,11 @@ export class AgencyProduct extends Model<AgencyProductAttributes, AgencyProductC
         type: DataTypes.BOOLEAN,
         allowNull: false,
         defaultValue: true
-      },
-      created_at: {
-        type: DataTypes.DATE,
-        allowNull: false,
-      },
-      updated_at: {
-        type: DataTypes.DATE,
-        allowNull: false,
       }
     }, {
       sequelize,
       tableName: 'agencies_products',
-      timestamps: true,
-      underscored: true,
+      timestamps: false,
       indexes: [
         {
           fields: ['agency_id', 'product_id'],

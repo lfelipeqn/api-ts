@@ -9,6 +9,14 @@ import { Brand } from '../models/Brand';
 import { ProductLine } from '../models/ProductLine';
 import multer from 'multer';
 import { Includeable, Op } from 'sequelize';
+import { File } from '../models/File';
+import { FileWithDetails, FileWithPrincipal } from '../types/file';
+
+
+interface ProductImagesResponse {
+  principal: FileWithDetails | undefined;
+  others: FileWithDetails[];
+}
 
 const router = Router();
 
@@ -180,7 +188,44 @@ router.delete('/products/:id', async (req, res) => {
   }
 });
 
-// Upload product images
+router.get('/products/:id/images', async (req, res) => {
+  try {
+    const product = await Product.findByPk(req.params.id);
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    // Get all files associated with the product
+    const files = await File.getByProductId(product.id);
+    
+    // Create a File instance for processing
+    const fileInstance = new File();
+
+    // Process each file to include URLs and sizes
+    const processedImages = await Promise.all(
+      files.map(async (file) => {
+        const fileDetails = await fileInstance.processFileDetails(file);
+        return fileDetails;
+      })
+    );
+
+    // Prepare the response
+    const response: ProductImagesResponse = {
+      principal: processedImages.find(img => img.products_files?.principal),
+      others: processedImages.filter(img => !img.products_files?.principal)
+    };
+
+    res.json(response);
+  } catch (error) {
+    console.error('Error fetching product images:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch product images',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+// Update the POST endpoint for uploading images
 router.post('/products/:id/images', upload.array('images', 5), async (req, res) => {
   try {
     const product = await Product.findByPk(req.params.id);
@@ -189,15 +234,60 @@ router.post('/products/:id/images', upload.array('images', 5), async (req, res) 
     }
 
     const files = req.files as Express.Multer.File[];
-    if (!files || files.length === 0) {
-      return res.status(400).json({ error: 'No files uploaded' });
+    const fileIds = req.body.fileIds ? JSON.parse(req.body.fileIds) : [];
+    let uploadedFiles: File[] = [];
+
+    // Handle new file uploads
+    if (files && files.length > 0) {
+      uploadedFiles = await product.associateFiles(files, 0);
     }
 
-    const uploadedFiles = await product.associateFiles(files, 0);
-    res.json(uploadedFiles);
+    // Handle existing file associations
+    if (fileIds.length > 0) {
+      const existingFiles = await File.findAll({
+        where: { id: { [Op.in]: fileIds } }
+      });
+
+      for (const file of existingFiles) {
+        await product.addFile(file, {
+          through: { principal: false }
+        });
+      }
+
+      uploadedFiles = [...uploadedFiles, ...existingFiles];
+    }
+
+    if (uploadedFiles.length === 0) {
+      return res.status(400).json({ error: 'No files uploaded or associated' });
+    }
+
+    // Create a File instance for processing
+    const fileInstance = new File();
+
+    // Convert uploaded files to FileWithPrincipal format
+    const filesWithPrincipal: FileWithPrincipal[] = uploadedFiles.map(file => ({
+      id: file.id,
+      name: file.name,
+      location: file.location,
+      created_at: file.created_at,
+      updated_at: file.updated_at,
+      products_files: {
+        principal: false // Default to false for new uploads
+      }
+    }));
+
+    // Process files to include URLs and sizes
+    const processedFiles: FileWithDetails[] = await Promise.all(
+      filesWithPrincipal.map(file => fileInstance.processFileDetails(file))
+    );
+
+    res.json(processedFiles);
   } catch (error) {
-    console.error('Error uploading images:', error);
-    res.status(500).json({ error: 'Failed to upload images' });
+    console.error('Error uploading/associating images:', error);
+    res.status(500).json({ 
+      error: 'Failed to upload/associate images',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
   }
 });
 
@@ -258,6 +348,50 @@ router.post('/products/:id/stock', async (req, res) => {
   }
 });
 
+router.get('/products/:id/total-stock', async (req, res) => {
+  try {
+    const product = await Product.findByPk(req.params.id);
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    const totalStock = await product.getTotalStock();
+    
+    res.json({ 
+      product_id: product.id,
+      total_stock: totalStock
+    });
+  } catch (error) {
+    console.error('Error getting total stock:', error);
+    res.status(500).json({ 
+      error: 'Failed to get total stock',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+router.get('/products/:id/stock-summary', async (req, res) => {
+  try {
+    const product = await Product.findByPk(req.params.id);
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    const stockSummary = await product.getStockSummary();
+    
+    res.json({
+      product_id: product.id,
+      ...stockSummary
+    });
+  } catch (error) {
+    console.error('Error getting stock summary:', error);
+    res.status(500).json({ 
+      error: 'Failed to get stock summary',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
 // Get product stock by agency
 router.get('/products/:id/stock/:agencyId', async (req, res) => {
   try {
@@ -266,11 +400,23 @@ router.get('/products/:id/stock/:agencyId', async (req, res) => {
       return res.status(404).json({ error: 'Product not found' });
     }
 
-    const stock = await product.getStockByAgency(Number(req.params.agencyId));
-    res.json({ stock });
+    const agencyId = Number(req.params.agencyId);
+    if (isNaN(agencyId)) {
+      return res.status(400).json({ error: 'Invalid agency ID' });
+    }
+
+    const stock = await product.getStockByAgency(agencyId);
+    res.json({ 
+      product_id: product.id,
+      agency_id: agencyId,
+      stock 
+    });
   } catch (error) {
     console.error('Error getting stock:', error);
-    res.status(500).json({ error: 'Failed to get stock' });
+    res.status(500).json({ 
+      error: 'Failed to get stock',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
   }
 });
 
