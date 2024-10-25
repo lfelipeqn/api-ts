@@ -7,8 +7,9 @@ import { DataSheetField } from '../models/DataSheetField';
 import { DataSheetValue } from '../models/DataSheetValue';
 import { Brand } from '../models/Brand';
 import { ProductLine } from '../models/ProductLine';
+import { PriceHistory } from '../models/PriceHistory';
 import multer from 'multer';
-import { Includeable, Op } from 'sequelize';
+import { Includeable, Op, Sequelize, QueryTypes } from 'sequelize';
 import { File } from '../models/File';
 import { FileWithDetails, FileWithPrincipal } from '../types/file';
 
@@ -51,15 +52,80 @@ router.get('/products', async (req, res) => {
 
     const offset = (Number(page) - 1) * Number(limit);
 
-    const results = await Product.searchWithCache(String(query), {
+    // Create the where clause for the main product search
+    const where: any = {
+      state: true,
+      [Op.or]: [
+        { name: { [Op.like]: `%${query}%` } },
+        { display_name: { [Op.like]: `%${query}%` } },
+        { reference: { [Op.like]: `%${query}%` } },
+        { magister_code: { [Op.like]: `%${query}%` } }
+      ]
+    };
+
+    if (brandId) where.brand_id = brandId;
+    if (productLineId) where.product_line_id = productLineId;
+
+    // First get the products
+    const results = await Product.findAndCountAll({
+      where,
       limit: Number(limit),
       offset,
-      brandId: brandId ? Number(brandId) : undefined,
-      productLineId: productLineId ? Number(productLineId) : undefined
+      include: [
+        { 
+          model: Brand, 
+          as: 'brand' 
+        },
+        { 
+          model: ProductLine, 
+          as: 'productLine' 
+        }
+      ],
+      order: [['created_at', 'DESC']]
+    });
+
+    // Get the product IDs from the results
+    const productIds = results.rows.map(product => product.id);
+
+    // If we have products, get their latest prices
+    let latestPrices: any[] = [];
+    if (productIds.length > 0) {
+      // Get the latest price history for each product using a raw query
+      latestPrices = await Product.sequelize!.query(`
+        SELECT ph.*
+        FROM price_histories ph
+        INNER JOIN (
+          SELECT product_id, MAX(created_at) as max_created_at
+          FROM price_histories
+          WHERE product_id IN (:productIds)
+          GROUP BY product_id
+        ) latest ON ph.product_id = latest.product_id 
+        AND ph.created_at = latest.max_created_at
+      `, {
+        replacements: { productIds },
+        type: QueryTypes.SELECT
+      });
+    }
+
+    // Create a map of product_id to latest price info for quick lookup
+    const priceMap = new Map(
+      latestPrices.map(price => [price.product_id, price])
+    );
+
+    // Transform the results to include price information
+    const transformedRows = results.rows.map(product => {
+      const latestPrice = priceMap.get(product.id);
+      const productJson = product.toJSON();
+      
+      return {
+        ...productJson,
+        price: latestPrice ? parseFloat(latestPrice.price) : 0,
+        unit_cost: latestPrice ? parseFloat(latestPrice.unit_cost) : 0
+      };
     });
 
     res.json({
-      data: results.rows,
+      data: transformedRows,
       meta: {
         total: results.count,
         page: Number(page),
@@ -68,7 +134,10 @@ router.get('/products', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching products:', error);
-    res.status(500).json({ error: 'Failed to fetch products' });
+    res.status(500).json({ 
+      error: 'Failed to fetch products',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
   }
 });
 
