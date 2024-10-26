@@ -1,54 +1,61 @@
-import { Model, DataTypes, Sequelize, Association } from 'sequelize';
-import bcrypt from 'bcrypt'
+import { Model, DataTypes, Sequelize, Association, HasOneGetAssociationMixin } from 'sequelize';
 import { Person } from './Person';
 import { Agency } from './Agency';
 import { ProductLine } from './ProductLine';
 import { City } from './City';
-import { Notification } from './Notification';
-import { Preference } from './Preference';
-import { Role } from './Role';
-import { Permission } from './Permission';
-import { UserToken } from './UserToken';
-import { Client } from './Client';
-import { Quote } from './Quote';
+import { Address } from './Address';
+import { UserSessionManager } from '../services/UserSessionManager';
+import { PasswordHandler } from '../services/PasswordHandler';
+import { 
+  UserAttributes, 
+  UserCreationAttributes, 
+  UserUpdateData, 
+  UserState,
+  USER_STATES,
+  TokenData
+} from '../types/user';
 
-export class User extends Model {
-  public id!: number;
-  public email!: string;
-  public state!: string;
-  public password!: string;
-  public schedule_code!: string | null;
-  public identity_verified_at!: Date | null;
-  public person_id!: number;
-  public agency_id!: number | null;
-  public product_line_id!: number | null;
-  public social_network_name!: string | null;
-  public social_network_user_id!: string | null;
-  public token!: string | null;
-  public city_id!: number | null;
-  public user_id!: number | null;
-  public fcm_token!: string | null;
+
+export class User extends Model<UserAttributes, UserCreationAttributes> {
+  declare id: number;
+  declare email: string;
+  declare state: UserState;
+  declare password: string;
+  declare schedule_code: string | null;
+  declare identity_verified_at: Date | null;
+  declare person_id: number;
+  declare agency_id: number | null;
+  declare product_line_id: number | null;
+  declare social_network_name: string | null;
+  declare social_network_user_id: string | null;
+  declare token: string | null;
+  declare city_id: number | null;
+  declare user_id: number | null;
 
   // Associations
-  public readonly person?: Person;
-  public readonly agency?: Agency;
-  public readonly productLine?: ProductLine;
-  public readonly city?: City;
-  public readonly notifications?: Notification[];
-  public readonly preferences?: Preference[];
-  public readonly roles?: Role[];
-  public readonly permissions?: Permission[];
+  declare readonly person?: Person;
+  declare readonly agency?: Agency;
+  declare readonly productLine?: ProductLine;
+  declare readonly city?: City;
+  declare readonly addresses?: Address[];
+
+  declare getPerson: HasOneGetAssociationMixin<Person>;
 
   public static associations: {
     person: Association<User, Person>;
     agency: Association<User, Agency>;
     productLine: Association<User, ProductLine>;
     city: Association<User, City>;
-    notifications: Association<User, Notification>;
-    preferences: Association<User, Preference>;
-    roles: Association<User, Role>;
-    permissions: Association<User, Permission>;
+    addresses: Association<User, Address>;
   };
+
+  static getStates(): UserState[] {
+    return [...USER_STATES];
+  }
+
+  static validateState(state: string): state is UserState {
+    return USER_STATES.includes(state as UserState);
+  }
 
   static initModel(sequelize: Sequelize): typeof User {
     User.init({
@@ -61,14 +68,27 @@ export class User extends Model {
         type: DataTypes.STRING,
         allowNull: false,
         unique: true,
+        validate: {
+          isEmail: true
+        }
       },
       state: {
-        type: DataTypes.STRING,
+        type: DataTypes.ENUM(...USER_STATES),
         allowNull: false,
+        defaultValue: 'PENDING',
+        validate: {
+          isIn: {
+            args: [USER_STATES],
+            msg: 'Invalid user state'
+          }
+        }
       },
       password: {
         type: DataTypes.STRING,
         allowNull: false,
+        validate: {
+          notEmpty: true
+        }
       },
       schedule_code: {
         type: DataTypes.STRING,
@@ -99,8 +119,19 @@ export class User extends Model {
         allowNull: true,
       },
       token: {
-        type: DataTypes.STRING,
+        type: DataTypes.TEXT,  // Changed to TEXT to store JSON token data
         allowNull: true,
+        validate: {
+          isValidJSON(value: string) {
+            if (value) {
+              try {
+                JSON.parse(value);
+              } catch (e) {
+                throw new Error('Invalid token format');
+              }
+            }
+          }
+        }
       },
       city_id: {
         type: DataTypes.INTEGER.UNSIGNED,
@@ -109,141 +140,256 @@ export class User extends Model {
       user_id: {
         type: DataTypes.INTEGER.UNSIGNED,
         allowNull: true,
-      },
-      fcm_token: {
-        type: DataTypes.STRING,
-        allowNull: true,
-      },
+      }
     }, {
       sequelize,
       tableName: 'users',
       timestamps: false,
+      underscored: true,
+      indexes: [
+        {
+          unique: true,
+          fields: ['email']
+        },
+        {
+          fields: ['state']
+        },
+        {
+          fields: ['person_id']
+        },
+        {
+          fields: ['agency_id']
+        }
+      ],
+      hooks: {
+        beforeCreate: async (user: User) => {
+          if (user.password) {
+            user.password = await PasswordHandler.hashPassword(user.password);
+          }
+        },
+        beforeUpdate: async (user: User) => {
+          if (user.changed('password')) {
+            user.password = await PasswordHandler.hashPassword(user.password);
+          }
+        }
+      },
     });
 
     return User;
   }
 
-  static associate(models: any) {
+  static associate(models: {
+    Person: typeof Person;
+    Agency: typeof Agency;
+    ProductLine: typeof ProductLine;
+    City: typeof City;
+    Address: typeof Address;
+  }) {
     User.belongsTo(models.Person, { foreignKey: 'person_id', as: 'person' });
     User.belongsTo(models.Agency, { foreignKey: 'agency_id', as: 'agency' });
     User.belongsTo(models.ProductLine, { foreignKey: 'product_line_id', as: 'productLine' });
     User.belongsTo(models.City, { foreignKey: 'city_id', as: 'city' });
-    User.belongsToMany(models.Notification, { 
-      through: 'users_notifications',
-      foreignKey: 'user_id',
-      otherKey: 'notification_id',
-      as: 'notifications'
-    });
-    User.belongsToMany(models.Preference, { 
-      through: 'users_preferences',
-      foreignKey: 'user_id',
-      otherKey: 'preference_id',
-      as: 'preferences'
-    });
-    User.belongsToMany(models.Role, { 
-      through: 'model_has_roles',
-      foreignKey: 'model_id',
-      otherKey: 'role_id',
-      as: 'roles'
-    });
-    User.belongsToMany(models.Permission, { 
-      through: 'model_has_permissions',
-      foreignKey: 'model_id',
-      otherKey: 'permission_id',
-      as: 'permissions'
-    });
+    User.hasMany(models.Address, { foreignKey: 'user_id', as: 'addresses' });
   }
 
+  // Session Management Methods
+  async createSession(): Promise<string> {
+    const sessionManager = UserSessionManager.getInstance();
+    return sessionManager.createSession(this);
+  }
+
+  async destroySession(sessionId: string): Promise<boolean> {
+    const sessionManager = UserSessionManager.getInstance();
+    return sessionManager.destroySession(sessionId);
+  }
+
+  async destroyAllSessions(): Promise<boolean> {
+    const sessionManager = UserSessionManager.getInstance();
+    return sessionManager.destroyUserSessions(this.id);
+  }
+
+  // Authentication Methods
+  async verifyPassword(password: string): Promise<boolean> {
+    return PasswordHandler.verifyPassword(password, this.password);
+  }
+
+  async changePassword(newPassword: string): Promise<void> {
+    const hashedPassword = await PasswordHandler.hashPassword(newPassword);
+    await this.update({ password: hashedPassword });
+    // Optionally destroy all sessions when password changes
+    await this.destroyAllSessions();
+  }
+
+   /**
+   * Create a password reset token and store it in the user model
+   */
+   async createPasswordResetToken(): Promise<string> {
+    const token = PasswordHandler.generateResetToken();
+    const tokenData: TokenData = {
+      token,
+      created_at: new Date()
+    };
+
+    await this.update({
+      token: JSON.stringify(tokenData)
+    });
+
+    return token;
+  }
+
+  /**
+   * Validate a password reset token
+   */
+  isValidResetToken(token: string): boolean {
+    try {
+      if (!this.token) return false;
+      
+      const tokenData: TokenData = JSON.parse(this.token);
+      
+      // Check if token matches
+      if (tokenData.token !== token) return false;
+      
+      // Check if token is expired
+      if (PasswordHandler.isTokenExpired(new Date(tokenData.created_at))) {
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      console.error('Error validating reset token:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Clear the reset token
+   */
+  async clearResetToken(): Promise<void> {
+    await this.update({ token: null });
+  }
+
+  /**
+   * Reset password using token
+   */
+  async resetPassword(token: string, newPassword: string): Promise<boolean> {
+    if (!this.isValidResetToken(token)) {
+      return false;
+    }
+
+    try {
+      await this.changePassword(newPassword);
+      await this.clearResetToken();
+      // Destroy all sessions when password is reset
+      await this.destroyAllSessions();
+      return true;
+    } catch (error) {
+      console.error('Error resetting password:', error);
+      return false;
+    }
+  }
+
+
+  // User Status Methods
+  async activate(): Promise<void> {
+    await this.update({ state: 'ACTIVE' });
+  }
+
+  async deactivate(): Promise<void> {
+    await this.update({ state: 'INACTIVE' });
+    await this.destroyAllSessions();
+  }
+
+  isActive(): boolean {
+    return this.state === 'ACTIVE';
+  }
+
+  // Profile Management Methods
   async getInfo(): Promise<User> {
     await this.reload({
-      include: ['person', 'roles', 'permissions', 'productLine']
+      include: [
+        'person',
+        'agency',
+        'productLine',
+        'city',
+        {
+          model: Address,
+          as: 'addresses',
+          include: [{
+            model: City,
+            as: 'city'
+          }]
+        }
+      ]
     });
     return this;
   }
 
-  async updateFull(data: any, imageProfile?: Express.Multer.File, fileCV?: Express.Multer.File, fileIdentification?: Express.Multer.File): Promise<void> {
-    const person = await this.$get('person');
-    if (person) {
-      await person.update({
-        identification_type: data.identification_type,
-        identification_number: data.identification_number,
-        first_name: data.first_name,
-        last_name: data.last_name,
-        date_of_birth: data.date_of_birth,
-        cell_phone_1: data.cell_phone_1,
-        cell_phone_2: data.cell_phone_2,
+  async updateProfile(data: UserUpdateData, imageProfile?: Express.Multer.File): Promise<void> {
+    const t = await this.sequelize!.transaction();
+
+    try {
+      const person = await this.getPerson();
+      if (person && data.person) {
+        await person.update({
+          first_name: data.person.first_name,
+          last_name: data.person.last_name,
+          cell_phone_1: data.person.cell_phone_1,
+          email: data.email
+        }, { transaction: t });
+
+        if (imageProfile) {
+          await person.assingAndStoreImageProfile(imageProfile);
+        }
+      }
+
+      const updateData: Partial<UserAttributes> = {
         email: data.email,
-        address: data.address,
+        schedule_code: data.schedule_code,
+        agency_id: data.agency_id,
+        product_line_id: data.product_line_id,
+        city_id: data.city_id
+      };
+
+      // Add state to update if provided and valid
+      if (data.state && User.validateState(data.state)) {
+        updateData.state = data.state;
+      }
+
+      // Remove undefined values
+      Object.keys(updateData).forEach(key => {
+        if (updateData[key as keyof typeof updateData] === undefined) {
+          delete updateData[key as keyof typeof updateData];
+        }
       });
 
-      if (imageProfile) {
-        await person.assingAndStoreImageProfile(imageProfile);
-      }
+      await this.update(updateData, { transaction: t });
 
-      if (fileCV) {
-        await person.assingAndStoreCV(fileCV);
-      }
-
-      if (fileIdentification) {
-        await person.assingAndStoreDni(fileIdentification);
-      }
+      await t.commit();
+    } catch (error) {
+      await t.rollback();
+      throw error;
     }
-
-    await this.update({
-      email: data.email,
-      schedule_code: data.schedule_code,
-    });
-
-    const role = await Role.findOne({ where: { name: data.role } });
-
-    this.agency_id = null;
-    this.product_line_id = null;
-
-    if (role) {
-      if (role.required_agency) {
-        this.agency_id = data.agency;
-      }
-
-      if (role.required_product_line) {
-        this.product_line_id = data.product_line;
-      }
-    }
-
-    if (data.password) {
-      this.password = await bcrypt.hash(data.password, 10);
-    }
-
-    await this.save();
-
-    if (role) {
-      await this.$set('roles', [role]);
-    }
-
-    if (data.permissions && Array.isArray(data.permissions)) {
-      await this.$set('permissions', data.permissions);
-    } else {
-      await this.$set('permissions', []);
-    }
-  }
-
-  async changePassword(newPassword: string): Promise<void> {
-    this.password = await bcrypt.hash(newPassword, 10);
-    await this.save();
-    // Log the password change event
-  }
-
-  async activateAccount(): Promise<void> {
-    await this.update({ state: 'Activo' });
-    // Log the account activation event
-  }
-
-  async generateToken(scope?: string, data?: string, expirationDate?: string, minLength: number = 60, maxLength: number = 65, onlyNumbers: boolean = false): Promise<UserToken> {
-    return UserToken.generate(this, scope, data, expirationDate, minLength, maxLength, onlyNumbers);
   }
 
   async agenciesByCity(includeVirtual: boolean = false): Promise<Agency[]> {
-    // Implement the query to get agencies by city
-    return [];
+    if (!this.city_id) return [];
+    
+    const where: any = { state: 'Activo' };
+    if (!includeVirtual) {
+      where.is_virtual = false;
+    }
+
+    const agencies = await Agency.findAll({
+      include: [{
+        model: Address,
+        as: 'address',
+        where: { city_id: this.city_id },
+        required: true
+      }],
+      where
+    });
+
+    return agencies;
   }
 
   async userCityHasAgency(): Promise<boolean> {
@@ -254,112 +400,39 @@ export class User extends Model {
     return false;
   }
 
-  async setPreference(name: string, value: string): Promise<void> {
-    const preference = await Preference.findOne({ where: { name } });
-    if (preference) {
-      await this.$remove('preferences', preference);
-      await this.$add('preferences', preference, { through: { value } });
-      // Log the preference setting event
+  async updateState(newState: UserState): Promise<void> {
+    if (!User.validateState(newState)) {
+      throw new Error(`Invalid user state: ${newState}`);
+    }
+
+    await this.update({ state: newState });
+
+    // Handle state-specific actions
+    switch (newState) {
+      case 'INACTIVE':
+      case 'BLOCKED':
+      case 'SUSPENDED':
+        await this.destroyAllSessions();
+        break;
     }
   }
 
-  async formatPreferences(): Promise<Record<string, any>> {
-    const preferences = await this.$get('preferences');
-    return preferences.reduce((acc, pref) => {
-      acc[pref.name] = isNaN(pref.UsersPreferences.value) ? pref.UsersPreferences.value : Number(pref.UsersPreferences.value);
-      return acc;
-    }, {} as Record<string, any>);
+  isInState(state: UserState): boolean {
+    return this.state === state;
   }
 
-  async setDefaultPreferences(): Promise<void> {
-    const showAvailableRewardsAutomatically = await Preference.findOne({ where: { name: 'show_available_rewards_automatically' } });
-    const showAvatar = await Preference.findOne({ where: { name: 'show_avatar' } });
+  canPerformAction(action: string): boolean {
+    // Define allowed actions per state
+    const allowedActions: Record<UserState, string[]> = {
+      ACTIVE: ['all'],
+      PENDING: ['verify', 'update_profile'],
+      INACTIVE: ['reactivate'],
+      BLOCKED: [],
+      SUSPENDED: ['contact_support']
+    };
 
-    if (showAvailableRewardsAutomatically) {
-      await this.$add('preferences', showAvailableRewardsAutomatically, { through: { value: '1' } });
-    }
-
-    if (showAvatar) {
-      await this.$add('preferences', showAvatar, { through: { value: '1' } });
-    }
-  }
-
-  async allowed(abort: boolean = true, codeAbort: number = 401): Promise<boolean> {
-    // Implement the authorization logic here
-    // This will depend on your authentication system and role/permission structure
-    return true;
-  }
-
-  async sendPasswordResetNotification(token: string): Promise<void> {
-    // Implement password reset notification logic
-    // This might involve sending an email or other notification
-  }
-
-  async sendWelcomeMessage(): Promise<void> {
-    if (this.email) {
-      const userToken = await this.generateToken('activate account');
-      // Implement email sending logic here
-      await userToken.hash();
-    }
-  }
-
-  async saveLogLogin(reference: string, request: any): Promise<void> {
-    // Implement login logging logic
-    // This might involve creating a log entry in your database
-  }
-
-  allowDomainAccess(domain: string): boolean {
-    // Implement domain access logic
-    return true;
-  }
-
-  async sendFacebookPixelEvent(ip: string, userAgent: string): Promise<boolean> {
-    // Implement Facebook Pixel event sending logic
-    return true;
-  }
-
-  async makeWelcomeToken(): Promise<void> {
-    const client = await Client.findOne({ where: { person_id: this.person_id } });
-    let allow = true;
-    if (client) {
-      const quotesCount = await Quote.count({
-        where: {
-          state: 1,
-          client_id: client.id
-        }
-      });
-      if (quotesCount > 0) {
-        allow = false;
-      }
-    }
-    if (allow) {
-      await this.generateToken('welcome-token');
-    }
-  }
-
-  async getWelcomeToken(): Promise<UserToken | null> {
-    return UserToken.findOne({
-      where: {
-        user_id: this.id,
-        scope: 'welcome-token'
-      }
-    });
-  }
-
-  async deleteWelcomeToken(): Promise<void> {
-    const userToken = await this.getWelcomeToken();
-    if (userToken) {
-      await userToken.destroy();
-    }
-  }
-
-  async hasWelcomeToken(): Promise<boolean> {
-    const count = await UserToken.count({
-      where: {
-        user_id: this.id,
-        scope: 'welcome-token'
-      }
-    });
-    return count > 0;
+    return allowedActions[this.state]?.includes('all') || 
+           allowedActions[this.state]?.includes(action) || 
+           false;
   }
 }

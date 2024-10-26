@@ -15,6 +15,8 @@ import { Address } from '../models/Address';
 import { City } from '../models/City';
 import { Department } from '../models/Department';
 import { Promotion } from '../models/Promotion';
+import { User } from '../models/User';
+import { Person } from '../models/Person';
 
 interface Models {
   File: typeof File;
@@ -32,6 +34,8 @@ interface Models {
   Agency: typeof Agency;
   AgencyProduct: typeof AgencyProduct;
   Promotion: typeof Promotion;
+  User: typeof User;
+  Person: typeof Person;
 }
 
 export const initializeDatabase = () => {
@@ -57,6 +61,8 @@ export const initializeDatabase = () => {
     StockHistory: StockHistory.initModel(sequelize),
     AgencyProduct: AgencyProduct.initModel(sequelize),
     Promotion: Promotion.initModel(sequelize),
+    User: User.initModel(sequelize),
+    Person: Person.initModel(sequelize),
   };
 
   // Then initialize associations
