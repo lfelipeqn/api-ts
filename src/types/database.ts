@@ -13,8 +13,14 @@ import { AgencyProduct } from '../models/AgencyProduct';
 import { Address } from '../models/Address';
 import { City } from '../models/City';
 import { Department } from '../models/Department';
+import { Cart } from '../models/Cart';
+import { CartDetail } from '../models/CartDetail';
+import { Promotion } from '../models/Promotion';
+import { User } from '../models/User';
+import { Person } from '../models/Person';
 
 export interface Models {
+
   City: typeof City;
   Department: typeof Department;
   Address: typeof Address;
@@ -29,6 +35,12 @@ export interface Models {
   StockHistory: typeof StockHistory;
   Agency: typeof Agency;
   AgencyProduct: typeof AgencyProduct;
+  Cart: typeof Cart;
+  CartDetail: typeof CartDetail;
+  Promotion: typeof Promotion;
+  User: typeof User;
+  Person: typeof Person;
+  
 }
 
 export interface Database {

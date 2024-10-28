@@ -17,26 +17,10 @@ import { Department } from '../models/Department';
 import { Promotion } from '../models/Promotion';
 import { User } from '../models/User';
 import { Person } from '../models/Person';
+import { Cart } from '../models/Cart';
+import { CartDetail } from '../models/CartDetail';
 
-interface Models {
-  File: typeof File;
-  Address: typeof Address;
-  City: typeof City;
-  Department: typeof Department;
-  Brand: typeof Brand;
-  ProductLine: typeof ProductLine;
-  Product: typeof Product;
-  DataSheet: typeof DataSheet;
-  DataSheetField: typeof DataSheetField;
-  DataSheetValue: typeof DataSheetValue;
-  PriceHistory: typeof PriceHistory;
-  StockHistory: typeof StockHistory;
-  Agency: typeof Agency;
-  AgencyProduct: typeof AgencyProduct;
-  Promotion: typeof Promotion;
-  User: typeof User;
-  Person: typeof Person;
-}
+import { Models } from '../types/database';
 
 export const initializeDatabase = () => {
   const sequelize = new Sequelize(process.env.DATABASE_URL as string, {
@@ -63,6 +47,8 @@ export const initializeDatabase = () => {
     Promotion: Promotion.initModel(sequelize),
     User: User.initModel(sequelize),
     Person: Person.initModel(sequelize),
+    Cart: Cart.initModel(sequelize),
+    CartDetail: CartDetail.initModel(sequelize),
   };
 
   // Then initialize associations
