@@ -109,8 +109,24 @@ export class UserSessionManager {
    * Destroy all sessions for a user
    */
   public async destroyUserSessions(userId: number): Promise<boolean> {
-    const pattern = `${this.config.prefix}*:${userId}`;
-    return this.cache.clearPattern(pattern);
+    try {
+      const pattern = `${this.config.prefix}*`;
+      const sessions = await this.cache.findByPattern<UserSession>(pattern);
+      
+      // Find all sessions belonging to this user
+      const userSessionKeys = sessions
+        .filter(({ value }) => value.id === userId) // Use id instead of user_id
+        .map(({ key }) => key);
+
+      if (userSessionKeys.length === 0) {
+        return true;
+      }
+
+      return await this.cache.delMany(userSessionKeys);
+    } catch (error) {
+      console.error('Error destroying user sessions:', error);
+      return false;
+    }
   }
 
   /**
@@ -156,7 +172,7 @@ export class UserSessionManager {
   /**
    * Get Redis key for session
    */
-  private getSessionKey(sessionId: string): string {
-    return `${this.config.prefix}${sessionId}`;
+  private getSessionKey(token: string): string {
+    return `${this.config.prefix}${token}`;
   }
 }

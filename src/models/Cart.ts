@@ -5,10 +5,13 @@ import {
     Association,
     HasManyGetAssociationsMixin,
     BelongsToGetAssociationMixin,
-    Transaction
+    Transaction,
+    Op
   } from 'sequelize';
   import { User } from './User';
   import { CartDetail } from './CartDetail';
+  import { Product } from './Product';
+  import { PriceHistory } from './PriceHistory';
   import { 
     CartAttributes, 
     CartCreationAttributes,
@@ -95,6 +98,25 @@ import {
       });
     }
 
+    static async getActiveCart(userId: number): Promise<Cart | null> {
+      return Cart.findOne({
+        where: {
+          user_id: userId,
+          status: 'active'
+        }
+      });
+    }
+
+    static async getActiveGuestCart(sessionId: string): Promise<Cart | null> {
+      return Cart.findOne({
+        where: {
+          session_id: sessionId,
+          status: 'active',
+          user_id: null
+        }
+      });
+    }
+
     // Helper method to create cart data
     private static createCartData(
         sessionId: string,
@@ -108,40 +130,111 @@ import {
         };
       }
   
-    async assignToUser(userId: number, transaction?: Transaction): Promise<void> {
-      await this.update({ 
+      async assignToUser(userId: number, transaction?: Transaction): Promise<void> {
+        const t = transaction || await this.sequelize!.transaction();
+        
+        try {
+          // Check if user already has an active cart
+          const existingCart = await Cart.findOne({
+            where: {
+              user_id: userId,
+              status: 'active'
+            },
+            transaction: t
+          });
+    
+          if (existingCart) {
+            // Merge this cart's items into the existing cart
+            const details = await this.getDetails({ transaction: t });
+            for (const detail of details) {
+              await CartDetail.addToCart(
+                existingCart.id,
+                detail.product_id,
+                detail.quantity,
+                t
+              );
+            }
+    
+            // Mark this cart as converted
+            /**await this.update({
+              status: 'converted'
+            }, { transaction: t });*/
+          } else {
+            // Assign this cart to the user
+            await this.update({
+              user_id: userId,
+              expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
+            }, { transaction: t });
+          }
+    
+          if (!transaction) {
+            await t.commit();
+          }
+        } catch (error) {
+          if (!transaction) {
+            await t.rollback();
+          }
+          throw error;
+        }
+      }
+
+    static async getOrCreateUserCart(userId: number): Promise<Cart> {
+      const cart = await Cart.findOne({
+        where: {
+          user_id: userId,
+          status: 'active'
+        }
+      });
+  
+      if (cart) {
+        return cart;
+      }
+  
+      return Cart.create({
         user_id: userId,
-        expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000)) // 30 days
-      }, { transaction });
+        session_id: `user-${userId}-${Date.now()}`,
+        status: 'active',
+        expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
+      });
     }
   
     async getSummary(): Promise<CartSummary> {
-      const details = await this.getDetails({
-        include: [
-          {
-            association: 'product',
-            include: ['currentPrice', 'activePromotions']
-          }
-        ]
+      console.log('Getting summary for cart:', this.id);
+    
+      const details = await CartDetail.findAll({
+        where: { cart_id: this.id },
+        include: [{
+          model: Product,
+          as: 'product'
+        }, {
+          model: PriceHistory,
+          as: 'priceHistory'
+        }],
+        logging: console.log
       });
-  
+    
+      console.log('Found details:', details.length);
+    
       const summary: CartSummary = {
         total: 0,
         subtotal: 0,
         totalDiscount: 0,
         items: []
       };
-  
+    
       for (const detail of details) {
         const itemSummary = await detail.getItemSummary();
+        console.log('Item summary:', itemSummary);
         summary.subtotal += itemSummary.subtotal;
         summary.totalDiscount += itemSummary.discount;
         summary.total += itemSummary.final_price;
         summary.items.push(itemSummary);
       }
-  
+    
+      console.log('Final summary:', summary);
       return summary;
     }
+    
   
     // Validate stock availability for all items
     async validateStock(): Promise<{
@@ -205,5 +298,63 @@ import {
         });
     
         return cart;
+      }
+
+      async removeProduct(productId: number, transaction?: Transaction): Promise<void> {
+        const t = transaction || await this.sequelize!.transaction();
+        try {
+          const detail = await CartDetail.findOne({
+            where: {
+              cart_id: this.id,
+              product_id: productId
+            },
+            transaction: t
+          });
+    
+          if (!detail) {
+            throw new Error('Product not found in cart');
+          }
+    
+          await detail.destroy({ transaction: t });
+    
+          if (!transaction) await t.commit();
+        } catch (error) {
+          if (!transaction) await t.rollback();
+          throw error;
+        }
+      }
+
+      static async cleanupAndCreateNew(userId: number | null, sessionId: string): Promise<Cart> {
+        const t = await this.sequelize!.transaction();
+        
+        try {
+          // Mark old active carts as abandoned
+          await this.update({
+            status: 'abandoned' as CartStatus
+          }, {
+            where: {
+              [Op.or]: [
+                { session_id: sessionId },
+                ...(userId ? [{ user_id: userId }] : [])
+              ],
+              status: 'active'
+            },
+            transaction: t
+          });
+    
+          // Create new cart
+          const cart = await this.create({
+            user_id: userId,
+            session_id: sessionId,
+            status: 'active' as CartStatus,
+            expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
+          }, { transaction: t });
+    
+          await t.commit();
+          return cart;
+        } catch (error) {
+          await t.rollback();
+          throw error;
+        }
       }
   }

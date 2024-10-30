@@ -19,8 +19,8 @@ export class CartSessionManager {
   }
 
   public async createSession(
-    cartId: number, 
-    userId?: number,
+    cartId: number,
+    userId: number | null = null,
     specificSessionId?: string
   ): Promise<string> {
     const sessionId = specificSessionId || this.generateSessionId();
@@ -55,7 +55,7 @@ export class CartSessionManager {
     const session = await this.getSession(sessionId);
     if (!session) return false;
 
-    const updatedSession = {
+    const updatedSession: CartSession = {
       ...session,
       ...data
     };
@@ -81,6 +81,20 @@ export class CartSessionManager {
       session,
       this.defaultExpiration
     );
+  }
+
+  public async findCartSessionsByUserId(userId: number): Promise<CartSession[]> {
+    try {
+      const pattern = `${this.prefix}*`;
+      const sessions = await this.cache.findByPattern<CartSession>(pattern);
+      
+      return sessions
+        .filter(({ value }) => value.user_id === userId)
+        .map(({ value }) => value);
+    } catch (error) {
+      console.error('Error finding cart sessions by user ID:', error);
+      return [];
+    }
   }
 
   private getKey(sessionId: string): string {

@@ -1,5 +1,10 @@
 import { createClient, RedisClientType } from 'redis';
 
+interface CacheEntry<T> {
+  key: string;
+  value: T;
+}
+
 export class Cache {
   private static instance: Cache;
   private client: RedisClientType;
@@ -106,31 +111,6 @@ export class Cache {
     }
   }
 
-  // Clear keys by pattern
-  public async clearPattern(pattern: string): Promise<boolean> {
-    try {
-      for await (const key of this.client.scanIterator({
-        MATCH: pattern,
-        COUNT: 100
-      })) {
-        await this.client.del(key);
-      }
-      return true;
-    } catch (error) {
-      console.error(`Error clearing cache pattern ${pattern}:`, error);
-      return false;
-    }
-  }
-
-  // Check if key exists
-  public async exists(key: string): Promise<boolean> {
-    try {
-      return (await this.client.exists(key)) === 1;
-    } catch (error) {
-      console.error(`Error checking cache key ${key}:`, error);
-      return false;
-    }
-  }
 
   // Increment a value
   public async increment(key: string): Promise<number> {
@@ -193,4 +173,66 @@ export class Cache {
       return null;
     }
   }
+
+   // Find keys by pattern and return their values
+   public async findByPattern<T>(pattern: string): Promise<CacheEntry<T>[]> {
+    try {
+      const keys = await this.scanKeys(pattern);
+      const entries: CacheEntry<T>[] = [];
+
+      for (const key of keys) {
+        const value = await this.get<T>(key);
+        if (value !== null) {
+          entries.push({ key, value });
+        }
+      }
+
+      return entries;
+    } catch (error) {
+      console.error(`Error finding by pattern ${pattern}:`, error);
+      return [];
+    }
+  }
+
+  // Scan keys using pattern
+  private async scanKeys(pattern: string): Promise<string[]> {
+    try {
+      const keys: string[] = [];
+      for await (const key of this.client.scanIterator({
+        MATCH: pattern,
+        COUNT: 100
+      })) {
+        keys.push(key);
+      }
+      return keys;
+    } catch (error) {
+      console.error(`Error scanning keys with pattern ${pattern}:`, error);
+      return [];
+    }
+  }
+
+  // Clear keys by pattern
+  public async clearPattern(pattern: string): Promise<boolean> {
+    try {
+      const keys = await this.scanKeys(pattern);
+      if (keys.length > 0) {
+        await this.delMany(keys);
+      }
+      return true;
+    } catch (error) {
+      console.error(`Error clearing cache pattern ${pattern}:`, error);
+      return false;
+    }
+  }
+
+  // Check if key exists
+  public async exists(key: string): Promise<boolean> {
+    try {
+      return (await this.client.exists(key)) === 1;
+    } catch (error) {
+      console.error(`Error checking cache key ${key}:`, error);
+      return false;
+    }
+  }
+
 }

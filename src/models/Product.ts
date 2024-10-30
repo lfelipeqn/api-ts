@@ -254,7 +254,7 @@ export class Product extends Model<ProductAttributes, ProductCreationAttributes>
     StockHistory: typeof StockHistory;
     DataSheet: typeof DataSheet;
   }): void {
-    if (!models.Brand || !models.ProductLine || !models.File) {
+    if (!models.Brand || !models.ProductLine || !models.File || !models.PriceHistory) {
       throw new Error('Required models not provided to Product.associate');
     }
   
@@ -280,6 +280,14 @@ export class Product extends Model<ProductAttributes, ProductCreationAttributes>
     Product.hasMany(models.PriceHistory, {
       foreignKey: 'product_id',
       as: 'priceHistories'
+    });
+
+    Product.hasOne(models.PriceHistory, {
+      foreignKey: 'product_id',
+      as: 'currentPrice',
+      scope: {  
+        order: [['created_at', 'DESC']]
+      }
     });
   
     Product.hasMany(models.StockHistory, {

@@ -3,10 +3,11 @@
 import { Request, Response, NextFunction } from 'express';
 import { UserSessionManager } from '../services/UserSessionManager';
 import { getModels } from '../config/database';
+import { User } from '../models/User';
 
 
 export interface AuthenticatedRequest extends Request {
-  user?: any;
+  user?: User;
   sessionId?: string;
 }
 
@@ -35,10 +36,9 @@ export const authMiddleware = async (
       });
     }
 
-    const { User } = getModels();
-
-    // Fetch the user
-    const user = await User.findByPk(session.id);
+    // Now we access user_id from the session, not id
+    const user = await User.findByPk(session.id); // Use session.id
+    
     if (!user) {
       await sessionManager.destroySession(sessionToken);
       return res.status(401).json({
@@ -72,3 +72,4 @@ export const authMiddleware = async (
     });
   }
 };
+

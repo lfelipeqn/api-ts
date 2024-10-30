@@ -1,4 +1,4 @@
-export const CART_STATUSES = ['active', 'converted', 'abandoned'] as const;
+export const CART_STATUSES = ['active', 'abandoned', 'ordered'] as const;
 export type CartStatus = typeof CART_STATUSES[number];
 
 export interface CartAttributes {
@@ -40,6 +40,7 @@ export interface CartSummaryItem {
   subtotal: number;
   final_price: number;
   stock_available: boolean;
+  applied_promotion: AppliedPromotion | null;
 }
 
 export interface CartSummary {
@@ -50,8 +51,21 @@ export interface CartSummary {
 }
 
 export interface CartSession {
+  cart_id: number;
+  user_id: number | null;
+  created_at: Date;
+  expires_at: Date;
+}
+
+ export interface AppliedPromotion {
+    id: number;
+    type: string;
+    discount: number;
+    is_sporadic: boolean;
+  }
+
+  export interface OrderedCart {
     cart_id: number;
-    user_id?: number;
-    created_at: Date;
-    expires_at: Date;
+    order_id: number;
+    ordered_at: Date;
   }

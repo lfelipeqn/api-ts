@@ -19,6 +19,7 @@ import { User } from '../models/User';
 import { Person } from '../models/Person';
 import { Cart } from '../models/Cart';
 import { CartDetail } from '../models/CartDetail';
+import { PromotionProducts } from '../models/PromotionProduct';
 
 import { Models } from '../types/database';
 
@@ -49,6 +50,7 @@ export const initializeDatabase = () => {
     Person: Person.initModel(sequelize),
     Cart: Cart.initModel(sequelize),
     CartDetail: CartDetail.initModel(sequelize),
+    PromotionProducts: PromotionProducts.initModel(sequelize),
   };
 
   // Then initialize associations

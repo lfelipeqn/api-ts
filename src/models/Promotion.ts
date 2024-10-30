@@ -214,14 +214,13 @@ export class Promotion extends Model<PromotionAttributes, PromotionCreationAttri
     }
 
     Promotion.belongsToMany(models.Product, {
-      through: 'promotion_products',
+      through: 'promotions_products', // Just specify the table name
       foreignKey: 'promotion_id',
       otherKey: 'product_id',
       as: 'products'
     });
-
     Promotion.belongsToMany(models.Brand, {
-      through: 'promotion_brands',
+      through: 'promotions_brands',
       foreignKey: 'promotion_id',
       otherKey: 'brand_id',
       as: 'brands'

@@ -40,12 +40,12 @@ interface FilterResult {
 }
 
 export class ProductLine extends Model<ProductLineAttributes, ProductLineCreationAttributes> {
-  public id!: number;
-  public name!: string;
+  declare id: number;
+  declare name: string;
 
   // Timestamps
-  public readonly created_at!: Date;
-  public readonly updated_at!: Date;
+  declare readonly created_at: Date;
+  declare readonly updated_at: Date;
 
   // Associations
   public readonly products?: Product[];

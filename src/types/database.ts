@@ -18,6 +18,7 @@ import { CartDetail } from '../models/CartDetail';
 import { Promotion } from '../models/Promotion';
 import { User } from '../models/User';
 import { Person } from '../models/Person';
+import { PromotionProducts } from '../models/PromotionProduct';
 
 export interface Models {
 
@@ -40,6 +41,7 @@ export interface Models {
   Promotion: typeof Promotion;
   User: typeof User;
   Person: typeof Person;
+  PromotionProducts: typeof PromotionProducts;
   
 }
 

@@ -32,15 +32,15 @@ interface BrandUpdate {
 }
 
 export class Brand extends Model<BrandAttributes, BrandCreationAttributes> {
-  public id!: number;
-  public name!: string;
-  public for_vehicles!: boolean;
-  public for_products!: boolean;
-  public file_id!: number | null;
+  declare id: number;
+  declare name: string;
+  declare for_vehicles: boolean;
+  declare for_products: boolean;
+  declare file_id: number | null;
 
   // Timestamps
-  public readonly created_at!: Date;
-  public readonly updated_at!: Date;
+  declare readonly created_at: Date;
+  declare readonly updated_at: Date;
 
   // Associations
   public readonly products?: Product[];
