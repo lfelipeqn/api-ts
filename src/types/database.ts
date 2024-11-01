@@ -19,6 +19,10 @@ import { Promotion } from '../models/Promotion';
 import { User } from '../models/User';
 import { Person } from '../models/Person';
 import { PromotionProducts } from '../models/PromotionProduct';
+import { Payment } from '../models/Payment';
+import { PaymentMethodConfig } from '../models/PaymentMethodConfig';
+import { GatewayConfig } from '../models/GatewayConfig';
+
 
 export interface Models {
 
@@ -42,7 +46,9 @@ export interface Models {
   User: typeof User;
   Person: typeof Person;
   PromotionProducts: typeof PromotionProducts;
-  
+  Payment: typeof Payment;
+  PaymentMethodConfig: typeof PaymentMethodConfig;
+  GatewayConfig: typeof GatewayConfig;
 }
 
 export interface Database {

@@ -1,16 +1,5 @@
 import { Model, DataTypes, Sequelize } from 'sequelize';
-import { PAYMENT_GATEWAYS, PaymentGateway } from '../types/payment';
-
-interface GatewayConfigAttributes {
-    id: number;
-    gateway: PaymentGateway;
-    name: string;
-    config: string; // Store as JSON string in DB
-    is_active: boolean;
-    test_mode: boolean;
-    created_at: Date;
-    updated_at: Date;
-}
+import { PAYMENT_GATEWAYS, PaymentGateway, GatewayConfigData, GatewayConfigAttributes } from '../types/payment';
 
 interface GatewayConfigCreationAttributes extends Omit<GatewayConfigAttributes, 'id' | 'created_at' | 'updated_at'> {}
 
@@ -25,10 +14,24 @@ export class GatewayConfig extends Model<GatewayConfigAttributes, GatewayConfigC
     declare created_at: Date;
     declare updated_at: Date;
   
+
+    getConfigObject(): GatewayConfigData {
+      try {
+        return typeof this.config === 'string' 
+          ? JSON.parse(this.config) 
+          : this.config;
+      } catch (e) {
+        console.warn('Failed to parse config:', e);
+        return {};
+      }
+    }
     // Helper methods to handle JSON conversion
     getConfig(): Record<string, any> {
-      const value = this.getDataValue('config');
-      return value ? JSON.parse(value) : {};
+      try {
+        return JSON.parse(this.getDataValue('config'));
+      } catch {
+        return {};
+      }
     }
   
     setConfig(value: Record<string, any>): void {
@@ -54,10 +57,20 @@ export class GatewayConfig extends Model<GatewayConfigAttributes, GatewayConfigC
           type: DataTypes.TEXT,
           allowNull: false,
           get() {
-            return this.getConfig();
+            const rawValue = this.getDataValue('config');
+            try {
+              return typeof rawValue === 'string' 
+                ? JSON.parse(rawValue) 
+                : rawValue;
+            } catch (e) {
+              console.warn('Failed to parse config in getter:', e);
+              return {};
+            }
           },
           set(value: Record<string, any>) {
-            this.setConfig(value);
+            this.setDataValue('config', 
+              typeof value === 'string' ? value : JSON.stringify(value)
+            );
           }
         },
         is_active: {

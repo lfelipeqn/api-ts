@@ -36,6 +36,15 @@ export interface GatewayConfig {
   updated_at: Date;
 }
 
+export interface GatewayConfigData {
+  api_key?: string;
+  api_secret?: string;
+  private_key?: string;
+  endpoint?: string;
+  webhook_url?: string;
+  [key: string]: any; // Allow for additional properties
+}
+
 // Payment Gateway Credentials Interface
 export interface GatewayCredentials {
   api_key?: string;
@@ -61,6 +70,17 @@ export interface PaymentTransaction {
   gateway_response?: Record<string, any>;
   error_message?: string;
   url?: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface GatewayConfigAttributes {
+  id: number;
+  gateway: PaymentGateway;
+  name: string;
+  config: string;
+  is_active: boolean;
+  test_mode: boolean;
   created_at: Date;
   updated_at: Date;
 }

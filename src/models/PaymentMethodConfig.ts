@@ -1,24 +1,25 @@
-import { Model, DataTypes, Sequelize, Association } from 'sequelize';
+import { Model, DataTypes, Sequelize, Association, BelongsToGetAssociationMixin } from 'sequelize';
 import { 
   PAYMENT_METHOD_TYPES, 
   PAYMENT_GATEWAYS, 
   PaymentMethodType, 
   PaymentGateway 
 } from '../types/payment';
+import { GatewayConfig } from '../models/GatewayConfig';
 
 interface PaymentMethodConfigAttributes {
-    id: number;
-    type: PaymentMethodType;
-    name: string;
-    description?: string;
-    enabled: boolean;
-    min_amount?: number;
-    max_amount?: number;
-    payment_gateway: PaymentGateway;
-    gateway_config_id: number;
-    created_at: Date;
-    updated_at: Date;
-  }
+  id: number;
+  type: PaymentMethodType;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  min_amount?: number;
+  max_amount?: number;
+  payment_gateway: PaymentGateway;
+  gateway_config_id: number;
+  created_at: Date;
+  updated_at: Date;
+}
   
   interface PaymentMethodConfigCreationAttributes extends Omit<PaymentMethodConfigAttributes, 'id' | 'created_at' | 'updated_at'> {}
   
@@ -35,6 +36,14 @@ interface PaymentMethodConfigAttributes {
     declare gateway_config_id: number;
     declare created_at: Date;
     declare updated_at: Date;
+
+    declare readonly gatewayConfig?: GatewayConfig;
+    declare getGatewayConfig: BelongsToGetAssociationMixin<GatewayConfig>;
+
+     // Declare associations
+    public static associations: {
+      gatewayConfig: Association<PaymentMethodConfig, GatewayConfig>;
+    };
   
     static initModel(sequelize: Sequelize): typeof PaymentMethodConfig {
       PaymentMethodConfig.init({

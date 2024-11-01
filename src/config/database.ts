@@ -20,6 +20,9 @@ import { Person } from '../models/Person';
 import { Cart } from '../models/Cart';
 import { CartDetail } from '../models/CartDetail';
 import { PromotionProducts } from '../models/PromotionProduct';
+import { Payment } from '../models/Payment';
+import { PaymentMethodConfig } from '../models/PaymentMethodConfig';
+import { GatewayConfig } from '../models/GatewayConfig';
 
 import { Models } from '../types/database';
 
@@ -51,6 +54,9 @@ export const initializeDatabase = () => {
     Cart: Cart.initModel(sequelize),
     CartDetail: CartDetail.initModel(sequelize),
     PromotionProducts: PromotionProducts.initModel(sequelize),
+    Payment: Payment.initModel(sequelize),
+    PaymentMethodConfig: PaymentMethodConfig.initModel(sequelize),
+    GatewayConfig: GatewayConfig.initModel(sequelize),
   };
 
   // Then initialize associations
