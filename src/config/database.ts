@@ -23,8 +23,8 @@ import { PromotionProducts } from '../models/PromotionProduct';
 import { Payment } from '../models/Payment';
 import { PaymentMethodConfig } from '../models/PaymentMethodConfig';
 import { GatewayConfig } from '../models/GatewayConfig';
-
 import { Models } from '../types/database';
+
 
 export const initializeDatabase = () => {
   const sequelize = new Sequelize(process.env.DATABASE_URL as string, {
@@ -56,7 +56,7 @@ export const initializeDatabase = () => {
     PromotionProducts: PromotionProducts.initModel(sequelize),
     Payment: Payment.initModel(sequelize),
     PaymentMethodConfig: PaymentMethodConfig.initModel(sequelize),
-    GatewayConfig: GatewayConfig.initModel(sequelize),
+    GatewayConfig: GatewayConfig.initModel(sequelize)
   };
 
   // Then initialize associations

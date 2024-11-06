@@ -13,8 +13,10 @@ import { PaymentMethodConfig } from '../models/PaymentMethodConfig';
 import { GatewayConfig } from '../models/GatewayConfig';
 import { Transaction, Sequelize } from 'sequelize';
 import { getSequelize } from '../config/database';
+import { PaymentGatewayService } from '../services/PaymentGatewayService';
 
 const router = Router();
+const gatewayService = PaymentGatewayService.getInstance();
 
 router.use(authMiddleware);
 
@@ -49,6 +51,22 @@ interface PaymentMethodUpdateData {
   gateway_config_id?: number;
 }
 
+interface StoredGouConfig {
+  api_key: string;
+  api_secret: string;
+  endpoint: string;
+  webhook_url?: string;
+}
+
+interface MaskedConfig {
+  api_key?: string;
+  api_secret?: string;
+  endpoint?: string;
+  webhook_url?: string;
+  private_key?: string;
+  [key: string]: any;
+}
+
 class PaymentMethodError extends Error {
     constructor(
       message: string,
@@ -58,6 +76,34 @@ class PaymentMethodError extends Error {
       this.name = 'PaymentMethodError';
     }
 }
+
+// Add validation schema for payment request
+const paymentRequestSchema = z.object({
+  type: z.enum(['CREDIT_CARD', 'PSE']),
+  reference: z.string(),
+  description: z.string(),
+  amount: z.number().positive(),
+  currency: z.string(),
+  // Credit Card fields
+  cardNumber: z.string().optional(),
+  cardExpiration: z.string().optional(),
+  cvv: z.string().optional(),
+  installments: z.string().optional(),
+  // PSE fields
+  bankCode: z.string().optional(),
+  bankName: z.string().optional(),
+  accountType: z.string().optional(),
+  accountNumber: z.string().optional(),
+  // Payer information
+  payer: z.object({
+    name: z.string(),
+    surname: z.string(),
+    email: z.string().email(),
+    documentType: z.string(),
+    document: z.string(),
+    mobile: z.string().optional()
+  })
+});
 
 // Middleware to validate request body
 const validateRequest = (schema: z.ZodSchema) => async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
@@ -94,89 +140,94 @@ const withTransaction = async <T>(
     }
   };
 
-router.get('/gateways', async (req, res) => {
-  try {
-    const gateways = await GatewayConfig.findAll({
-      order: [['name', 'ASC']]
-    });
-
-    const maskedGateways = gateways.map(gateway => {
-      const config = gateway.getConfig();
-      return {
-        id: gateway.id,
-        gateway: gateway.gateway,
-        name: gateway.name,
-        config: {
+  router.get('/gateways', async (req, res) => {
+    try {
+      const gateways = await GatewayConfig.findAll({
+        order: [['name', 'ASC']]
+      });
+  
+      const maskedGateways = gateways.map(gateway => {
+        const config = gateway.getConfig();
+        const maskedConfig: MaskedConfig = {
           ...config,
           api_key: config.api_key ? '********' : undefined,
           api_secret: config.api_secret ? '********' : undefined,
           private_key: config.private_key ? '********' : undefined
-        },
-        is_active: gateway.is_active,
-        test_mode: gateway.test_mode,
-        created_at: gateway.created_at,
-        updated_at: gateway.updated_at
+        };
+  
+        return {
+          id: gateway.id,
+          gateway: gateway.gateway,
+          name: gateway.name,
+          config: maskedConfig,
+          is_active: gateway.is_active,
+          test_mode: gateway.test_mode,
+          created_at: gateway.created_at,
+          updated_at: gateway.updated_at
+        };
+      });
+  
+      res.json({
+        status: 'success',
+        data: maskedGateways
+      });
+    } catch (error) {
+      console.error('Error fetching gateway configs:', error);
+      res.status(500).json({
+        status: 'error',
+        message: 'Failed to fetch gateway configurations'
+      });
+    }
+  });
+
+  router.post('/gateways', validateRequest(gatewayConfigSchema), async (req, res) => {
+    try {
+      const sequelize = getSequelize();
+      const gateway = await withTransaction(sequelize, async (transaction) => {
+        // Convert config object to JSON string before creating
+        const data = {
+          gateway: req.body.gateway,
+          name: req.body.name,
+          config: JSON.stringify(req.body.config), // Explicitly stringify the config
+          is_active: req.body.is_active ?? false,
+          test_mode: req.body.test_mode ?? true
+        };
+  
+        const newGateway = await GatewayConfig.create(data, { transaction });
+        return newGateway;
+      });
+  
+      // Get config as object for response
+      const config = gateway.getConfig();
+      const maskedConfig = {
+        ...config,
+        api_key: config.api_key ? '********' : undefined,
+        api_secret: config.api_secret ? '********' : undefined,
+        private_key: config.private_key ? '********' : undefined
       };
-    });
-
-    res.json({
-      status: 'success',
-      data: maskedGateways
-    });
-  } catch (error) {
-    console.error('Error fetching gateway configs:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to fetch gateway configurations'
-    });
-  }
-});
-
-router.post('/gateways', validateRequest(gatewayConfigSchema), async (req, res) => {
-  try {
-    const sequelize = getSequelize();
-    const gateway = await withTransaction(sequelize, async (transaction) => {
-      const newGateway = await GatewayConfig.create({
-        gateway: req.body.gateway,
-        name: req.body.name,
-        config: req.body.config, // Sequelize will handle the JSON stringification
-        is_active: req.body.is_active ?? false,
-        test_mode: req.body.test_mode ?? true
-      }, { transaction });
-
-      return newGateway;
-    });
-
-    // Prepare response with masked sensitive data
-    const config = gateway.getConfig();
-    const maskedConfig = {
-      ...config,
-      api_key: config.api_key ? '********' : undefined,
-      api_secret: config.api_secret ? '********' : undefined,
-      private_key: config.private_key ? '********' : undefined
-    };
-
-    res.status(201).json({
-      status: 'success',
-      data: {
-        id: gateway.id,
-        gateway: gateway.gateway,
-        name: gateway.name,
-        config: maskedConfig,
-        is_active: gateway.is_active,
-        test_mode: gateway.test_mode,
-        created_at: gateway.created_at,
-        updated_at: gateway.updated_at
-      }
-    });
-  } catch (error) {
-    console.error('Error creating gateway config:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to create gateway configuration'
-    });
-  }
-});
+  
+      res.status(201).json({
+        status: 'success',
+        data: {
+          id: gateway.id,
+          gateway: gateway.gateway,
+          name: gateway.name,
+          config: maskedConfig,
+          is_active: gateway.is_active,
+          test_mode: gateway.test_mode,
+          created_at: gateway.created_at,
+          updated_at: gateway.updated_at
+        }
+      });
+    } catch (error) {
+      console.error('Error creating gateway config:', error);
+      res.status(500).json({
+        status: 'error',
+        message: 'Failed to create gateway configuration',
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  });
 
 router.get('/gateways/:id', async (req, res) => {
   try {
@@ -188,19 +239,20 @@ router.get('/gateways/:id', async (req, res) => {
       });
     }
 
-    const maskedConfig = {
-      ...gateway.toJSON(),
-      config: {
-        ...gateway.getConfig(),
-        api_key: '********',
-        api_secret: '********',
-        private_key: '********'
-      }
+    const config = gateway.getConfig();
+    const maskedConfig: MaskedConfig = {
+      ...config,
+      api_key: '********',
+      api_secret: '********',
+      private_key: '********'
     };
 
     res.json({
       status: 'success',
-      data: maskedConfig
+      data: {
+        ...gateway.toJSON(),
+        config: maskedConfig
+      }
     });
   } catch (error) {
     console.error('Error fetching gateway config:', error);
@@ -210,7 +262,7 @@ router.get('/gateways/:id', async (req, res) => {
     });
   }
 });
-
+/** 
 router.patch('/gateways/:id', async (req, res) => {
   try {
     const sequelize = getSequelize();
@@ -293,7 +345,7 @@ router.patch('/gateways/:id', async (req, res) => {
       message: error instanceof Error ? error.message : 'Failed to update gateway configuration'
     });
   }
-});
+});*/
 
 // Payment Method Routes
 router.get('/payment-methods', async (req, res) => {
