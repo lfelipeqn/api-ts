@@ -1,68 +1,122 @@
-export const PAYMENT_METHOD_TYPES = ['PSE', 'CREDIT_CARD', 'CREDIT', 'TRANSFER', 'CASH'] as const;
+// Payment Method Types
+export const PAYMENT_METHOD_TYPES = ['PSE', 'CREDIT_CARD', 'DEBIT_CARD', 'TRANSFER', 'CASH'] as const;
 export type PaymentMethodType = typeof PAYMENT_METHOD_TYPES[number];
 
-// Updated Payment Gateway Types
-export const PAYMENT_GATEWAYS = ['OPENPAY', 'GOU'] as const;
+
+// Payment Gateways
+export const PAYMENT_GATEWAYS = ['GOU', 'OPENPAY'] as const;
 export type PaymentGateway = typeof PAYMENT_GATEWAYS[number];
 
 // Payment States
-export const PAYMENT_STATES = ['PENDING', 'PROCESSING', 'APPROVED', 'REJECTED', 'CANCELLED', 'REFUNDED'] as const;
+export const PAYMENT_STATES = ['PENDING', 'PROCESSING', 'APPROVED', 'REJECTED', 'CANCELLED', 'REFUNDED','FAILED'] as const;
 export type PaymentState = typeof PAYMENT_STATES[number];
 
+// Gateway Method Configuration
+export interface PaymentMethodSettings {
+  enabled: boolean;
+  minAmount?: number;
+  maxAmount?: number;
+  supportedCurrencies: string[];
+}
+
+// Payment Method Mapping Type (using type instead of interface)
+export type PaymentMethodMapping = Record<PaymentMethodType, PaymentMethodSettings>;
+
+// Gateway Method Configuration
+export interface PaymentMethodConfig {
+  gateway: PaymentGateway;
+  enabled: boolean;
+  minAmount?: number;
+  maxAmount?: number;
+  supportedCurrencies: string[];
+}
+
+// Gateway Configuration Interface 
+export interface GatewayConfig {
+  provider: PaymentGateway;
+  enabled: boolean;
+  testMode: boolean;
+  credentials: {
+    apiKey: string;
+    apiSecret: string;
+    merchantId?: string;
+    publicKey?: string;
+    privateKey?: string;
+  };
+  endpoint: string;
+  webhookUrl?: string;
+  supportedMethods: PaymentMethodMapping;
+}
+
+// Generic Payment Response Interface
+export interface PaymentResponse {
+  id: string;
+  status: PaymentState;
+  amount: number;
+  currency: string;
+  paymentMethod: PaymentMethodType;
+  gatewayReference?: string;
+  redirectUrl?: string;
+  orderId?: string;  // Add this field
+  metadata?: Record<string, any>;
+}
+
+// PSE Bank Interface
+export interface PSEBank {
+  id: string;
+  name: string;
+  code: string;
+  status: 'active' | 'inactive';
+}
+
+// Payment Gateway Interface
 export interface PaymentGatewayInterface {
-  getGatewayInfo(): Partial<GatewayConfigData>;
-  processPayment(payment: any): Promise<any>;
-  verifyTransaction(transactionId: string): Promise<any>;
-  refundTransaction(transactionId: string, amount?: number): Promise<any>;
+  getGatewayInfo(): Partial<GatewayConfig>;
+  processPSEPayment(request: PSEPaymentRequest): Promise<PaymentResponse>;
+  verifyTransaction(transactionId: string): Promise<PaymentResponse>;
+  refundTransaction(transactionId: string, amount?: number): Promise<PaymentResponse>;
+  getBanks(): Promise<PSEBank[]>;
   testConnection(): Promise<any>;
 }
 
-export interface GatewayConfig {
-  provider: PaymentGateway;
-  api_key: string;
-  api_secret: string;
-  endpoint: string;
-  webhook_url?: string;
-  test_mode?: boolean;
-}
-
-export interface GatewayConfigData extends GatewayConfig {
-  [key: string]: any;
-}
-
-export interface PaymentResponse {
-  id: string;
-  status: string;
-  amount: number;
-  currency: string;
-  description: string;
-  authorization?: string;
-  order_id: string;
-  payment_method: any;
-  transaction_id: string;
-  error_message?: string | null;
-  created_at: string;
-}
-
-export interface GouGatewayConfig extends GatewayConfigData {
-  provider: 'GOU';
-}
-
-export interface OpenPayGatewayConfig extends GatewayConfigData {
-  provider: 'OPENPAY';
-}
-
+// Payer Information Interface
 export interface Payer {
+  documentType: string;
+  documentNumber: string;
   name: string;
   surname: string;
   email: string;
-  documentType: string;
-  document: string;
   mobile?: string;
+}
+
+// Base Gateway Configuration Data
+export interface GatewayConfigData {
+  provider: PaymentGateway;
+  apiKey: string;
+  apiSecret: string;
+  endpoint: string;
+  webhookUrl?: string;
+  testMode?: boolean;
+  [key: string]: any;
 }
 
 // Payment Method Configuration Interface
 export interface PaymentMethodConfig {
+  id: number;
+  type: PaymentMethodType;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  min_amount?: number;
+  max_amount?: number;
+  payment_gateway: PaymentGateway;
+  gateway_config_id: number;
+  created_at: Date;
+  updated_at: Date;
+}
+
+// Payment Method Database Model Interface
+export interface PaymentMethodModel {
   id: number;
   type: PaymentMethodType;
   name: string;
@@ -115,3 +169,64 @@ export interface GatewayConfigAttributes {
   created_at: Date;
   updated_at: Date;
 }
+
+export interface OpenPayCustomer {
+  name: string;
+  last_name: string;
+  email: string;
+  phone_number: string;
+  requires_account?: boolean;
+}
+
+export interface CustomerAddress {
+  department: string;
+  city: string;
+  additional: string;
+}
+
+export interface PSECustomer {
+  customerId?: string;  // For existing customers
+  name: string;
+  last_name: string;
+  email: string;
+  phone_number: string;
+  requires_account?: boolean;
+  address?: CustomerAddress;
+}
+
+export interface PSEPaymentRequest {
+  amount: number;
+  currency: string;
+  description: string;
+  redirectUrl: string;
+  customer: PSECustomer;
+  metadata?: Record<string, any>;
+}
+
+// Add OpenPay specific interfaces
+export interface OpenPayBaseRequest {
+  method: string;
+  amount: number;
+  currency: string;
+  description: string;
+  order_id: string;
+  iva: string;
+  redirect_url: string;
+}
+
+export interface OpenPayCustomerRequest extends OpenPayBaseRequest {
+  customer: {
+    name: string;
+    last_name: string;
+    email: string;
+    phone_number: string;
+    requires_account: boolean;
+    customer_address: {
+      department: string;
+      city: string;
+      additional: string;
+    };
+  };
+}
+
+export type OpenPayPaymentRequest = OpenPayBaseRequest | OpenPayCustomerRequest;

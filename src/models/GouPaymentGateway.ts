@@ -1,133 +1,168 @@
-import { BasePaymentGateway } from './BasePaymentGateway';
-import { GatewayConfigData, Payer} from '../types/payment';
+import { 
+  PaymentGatewayInterface,
+  GatewayConfigData,
+  PaymentResponse,
+  PSEPaymentRequest,
+  PSEBank,
+  PaymentState,
+  PaymentMethodType,
+} from '../types/payment';
 import { randomBytes, createHash } from 'crypto';
 
-interface GouAuthCredentials {
-  login: string;
-  tranKey: string;
-  nonce: string;
-  seed: string;
-}
-
-interface GouAuthRequest {
-  auth: {
-    login: string;
-    tranKey: string;
-    nonce: string;
-    seed: string;
-  };
-}
-
-interface GouTokenResponse {
-  status: {
-    status: string;
-    reason: string;
-    message: string;
-    date: string;
-  };
-  token: string;
-  subtoken?: string;
-  franchise: string;
-  franchiseName: string;
-  lastDigits: string;
-  validUntil: string;
-}
-
-interface GouInvalidateResponse {
-  status: {
-    status: string;
-    reason: string;
-    message: string;
-    date: string;
-  }
-}
-
-interface TokenInstrument {
-  card?:{
-    number: string;
-    expiration: string;
-    cvv: string;
-    installments: string;
-  }
-  account?: {
-    bankCode: string;
-    bankName: string;
-    accountType: string;
-    accountNumber: string;
-    franchise?: string | undefined;
-    verificationCode?: string | undefined;
-  }
-}
-
-// Helper Types
-interface PaymentRequest {
-  type: string;
-  payment: {
-    reference: string;
-    description: string;
-    amount: {
-      currency: string;
-      total: number;
-    }
-  };
-  instrument: {
-    card?: {
-      number: string;
-      expiration: string;
-      cvv: string;
-      installments: string;
-    }
-  };
-  payer: Payer;
-  ipAddress: string;
-  userAgent: string;
-}
-
-interface PaymentResponse {
-  status: PaymentState;
-  statusCode: string;
+interface GouStatusResponse {
+  status: string;
+  reason: string;
   message: string;
-  transactionId: string;
-  authorizationCode?: string;
-  receiptNumber?: string;
-  lastDigits?: string;
-  paymentMethod: string;
-  processorFields: any;
-  responseData: any;
+  date: string;
 }
 
-interface TokenizeRequest {
-  type: 'CREDIT_CARD' | 'PSE';
-  payer: {
-    name: string;
-    surname: string;
-    email: string;
+interface GouAmount {
+  currency: string;
+  total: string;
+  taxes?: Array<{
+    kind: string;
+    amount: number;
+    base: number;
+  }>;
+  details?: Array<{
+    kind: string;
+    amount: number;
+  }>;
+}
+
+interface GouProcessorFields {
+  id: string;
+  b24: string;
+}
+
+interface GouErrorResponse {
+  status: {
+    status: string;
+    reason: string;
+    message: string;
+    date: string;
   };
-  ipAddress: string;
-  userAgent: string;
-  instrument: TokenInstrument;
+  error?: string;
 }
 
-interface TokenResponse {
-  token: string;
-  subtoken?: string;
+interface GouAuthResponse {
+  status: GouStatusResponse;
+  provider: string;
+  cardType?: string;
+  cardTypes?: string[];
+  displayInterest: boolean;
+  requireOtp: boolean;
+  requireCvv2: boolean;
+  threeDS?: 'optional' | 'required' | 'none';
+  credits?: Array<{
+    description: string;
+    code: string;
+    groupCode: string;
+    type: string;
+    installments: number[];
+  }>;
+}
+
+// API Response interfaces
+interface GouStatusResponse {
+  status: string;
+  reason: string;
+  message: string;
+  date: string;
+}
+
+interface GouAmount {
+  currency: string;
+  total: string;
+  taxes?: Array<{
+    kind: string;
+    amount: number;
+    base: number;
+  }>;
+  details?: Array<{
+    kind: string;
+    amount: number;
+  }>;
+}
+
+interface GouProcessorFields {
+  id: string;
+  b24: string;
+}
+
+interface GouErrorData {
+  status: {
+    status: string;
+    reason: string;
+    message: string;
+    date: string;
+  };
+  error?: string;
+}
+
+interface GouRefundAPIResponse extends GouAPIResponse {
+  type: 'REFUND';
+  additional: {
+    merchantCode: string;
+    terminalNumber: string;
+    bin: string;
+    expiration: string;
+    amountRefunded?: number;
+  };
+}
+
+interface GouPaymentResponse extends PaymentResponse {
+  lastDigits?: string;
+  franchise?: string; 
+  franchiseName?: string;
+  issuerName?: string | null | undefined; // Changed from string | null
+  receipt?: string;
+  authorization?: string;
+  processorFields?: {
+    id: string;
+    b24: string;
+  };
+  additional?: {
+    merchantCode?: string;
+    terminalNumber?: string;
+    bin?: string;
+    expiration?: string;
+    credit?: {
+      code: number;
+      type: string;
+      groupCode: string;
+      installments: number;
+    };
+    totalAmount?: number;
+    interestAmount?: number;
+    installmentAmount?: number;
+    iceAmount?: number;
+  };
+}
+
+interface GouAPIResponse {
+  status: GouStatusResponse;
+  date: string;
+  transactionDate: string;
+  internalReference: number;
+  reference: string;
+  paymentMethod: string;
   franchise: string;
   franchiseName: string;
-  lastDigits: string;
-  validUntil: string;
+  issuerName?: string | null | undefined;  // Keep as null in API response
+  amount: GouAmount;
+  authorization?: string;
+  receipt?: string;
+  type: string;
+  refunded: boolean;
+  lastDigits?: string;
+  provider: string;
+  processorFields?: GouProcessorFields;
+  additional?: Record<string, any>;
 }
 
-interface GouAuthDebug extends GouAuthRequest {
-  debug: {
-    timestamp: string;
-    timezone: string;
-    timestampUTC: string;
-  };
-}
 
-type PaymentState = 'APPROVED' | 'REJECTED' | 'PENDING' | 'FAILED';
-
-export class GouPaymentGateway extends BasePaymentGateway {
+export class GouPaymentGateway implements PaymentGatewayInterface {
   private readonly baseUrl: string;
   private readonly login: string;
   private readonly secretKey: string;
@@ -135,8 +170,6 @@ export class GouPaymentGateway extends BasePaymentGateway {
   private readonly testMode: boolean;
 
   constructor(config: GatewayConfigData) {
-    super(config);
-
     if (!config.api_key || !config.api_secret || !config.endpoint) {
       throw new Error('Missing required GOU gateway configuration');
     }
@@ -148,19 +181,65 @@ export class GouPaymentGateway extends BasePaymentGateway {
     this.testMode = config.test_mode || false;
   }
 
+  private mapPaymentMethod(gouPaymentMethod: string): PaymentMethodType {
+    // Map GOU payment methods to standardized payment methods
+    const paymentMethodMap: Record<string, PaymentMethodType> = {
+      // PSE mappings
+      'PSE': 'PSE',
+      'BTN': 'PSE',
+      'BTNBC': 'PSE',
+      
+      // Credit card mappings
+      'CR_VS': 'CREDIT_CARD',
+      'CR_MC': 'CREDIT_CARD',
+      'CR_AM': 'CREDIT_CARD',
+      'CR_DN': 'CREDIT_CARD',
+      'CR_CR': 'CREDIT_CARD',
+      
+      // Debit card mappings
+      'DB_VS': 'DEBIT_CARD',
+      'DB_MC': 'DEBIT_CARD',
+      'DB_AM': 'DEBIT_CARD',
+      
+      // Bank transfer mappings
+      'BT': 'TRANSFER',
+      'ACH': 'TRANSFER',
+      
+      // Cash/voucher mappings
+      'CASH': 'CASH',
+      'EFX': 'CASH',
+      'BP': 'CASH'
+    };
+
+    const mappedMethod = paymentMethodMap[gouPaymentMethod];
+    
+    if (!mappedMethod) {
+      console.warn(`Unknown GOU payment method: ${gouPaymentMethod}, defaulting to CREDIT_CARD`);
+      return 'CREDIT_CARD';
+    }
+
+    return mappedMethod;
+  }
+
+  processPSEPayment(request: PSEPaymentRequest): Promise<PaymentResponse> {
+    throw new Error('Method not implemented.');
+  }
+  getBanks(): Promise<PSEBank[]> {
+    throw new Error('Method not implemented.');
+  }
+
   private validateConfig(): void {
     if (!this.login || !this.secretKey || !this.baseUrl) {
       throw new Error('Invalid gateway configuration');
     }
-    console.log('Gateway configuration validated:', {
-      baseUrl: this.baseUrl,
-      login: this.login,
-      hasSecretKey: Boolean(this.secretKey),
-      testMode: this.testMode
-    });
   }
 
-  public async generateAuth(): Promise<GouAuthCredentials> {
+  public async generateAuth(): Promise<{
+    login: string;
+    tranKey: string;
+    nonce: string;
+    seed: string;
+  }> {
     try {
       const nonce = await this.generateNonce();
       const seed = new Date().toISOString();
@@ -173,21 +252,11 @@ export class GouPaymentGateway extends BasePaymentGateway {
         seed
       };
 
-      console.log('Generated auth credentials:', auth);
       return auth;
     } catch (error) {
       console.error('Error generating authentication:', error);
       throw new Error('Failed to generate authentication credentials');
     }
-  }
-
-  private generateRandomBytes(size: number): Promise<Buffer> {
-    return new Promise((resolve, reject) => {
-      randomBytes(size, (err, buf) => {
-        if (err) reject(err);
-        resolve(buf);
-      });
-    });
   }
 
   private async generateNonce(): Promise<{ original: Buffer; base64: string }> {
@@ -215,8 +284,7 @@ export class GouPaymentGateway extends BasePaymentGateway {
     return hash.digest('base64');
   }
 
-
-  public async processPayment(payment: any): Promise<any> {
+  public async processPayment(paymentData: any): Promise<GouPaymentResponse> {
     try {
       const auth = await this.generateAuth();
       
@@ -224,17 +292,17 @@ export class GouPaymentGateway extends BasePaymentGateway {
         auth,
         locale: 'es_CO',
         payment: {
-          reference: payment.payment.reference,
-          description: payment.payment.description,
+          reference: paymentData.reference,
+          description: paymentData.description,
           amount: {
-            currency: payment.payment.amount.currency,
-            total: String(payment.payment.amount.total)
+            currency: paymentData.currency,
+            total: String(paymentData.amount)
           }
         },
-        instrument: payment.instrument,
-        payer: payment.payer,
-        ipAddress: payment.ipAddress || '127.0.0.1',
-        userAgent: payment.userAgent || 'PlaceToPay'
+        instrument: paymentData.instrument,
+        payer: paymentData.payer,
+        ipAddress: paymentData.ipAddress || '127.0.0.1',
+        userAgent: paymentData.userAgent || 'PlaceToPay'
       };
 
       const response = await fetch(`${this.baseUrl}/gateway/process`, {
@@ -246,20 +314,40 @@ export class GouPaymentGateway extends BasePaymentGateway {
         body: JSON.stringify(requestBody)
       });
 
-      const responseData:any = await response.json();
-      
       if (!response.ok) {
-        throw new Error(responseData.status?.message || `Payment failed: ${response.statusText}`);
+        const errorData = await response.json() as GouErrorData;
+        throw new Error(errorData.status?.message || `Payment failed: ${response.statusText}`);
       }
 
-      return responseData;
+      const responseData = await response.json() as GouAPIResponse;
+
+      return {
+        id: responseData.internalReference.toString(),
+        status: this.mapStatus(responseData.status.status),
+        amount: parseFloat(responseData.amount.total),
+        currency: responseData.amount.currency,
+        paymentMethod: this.mapPaymentMethod(responseData.paymentMethod),
+        gatewayReference: responseData.authorization,
+        // GOU specific fields
+        lastDigits: responseData.lastDigits,
+        franchise: responseData.franchise,
+        franchiseName: responseData.franchiseName,
+        issuerName: responseData.issuerName,
+        receipt: responseData.receipt,
+        authorization: responseData.authorization,
+        processorFields: responseData.processorFields,
+        additional: responseData.additional,
+        metadata: responseData
+      };
+
     } catch (error) {
       console.error('Payment processing error:', error);
       throw error;
     }
   }
 
-  public async verifyTransaction(transactionId: string): Promise<any> {
+
+  public async verifyTransaction(transactionId: string): Promise<GouPaymentResponse> {
     const auth = await this.generateAuth();
     
     const response = await fetch(`${this.baseUrl}/gateway/query`, {
@@ -271,133 +359,101 @@ export class GouPaymentGateway extends BasePaymentGateway {
       })
     });
 
-    return this.handleResponse(await response.json());
+    if (!response.ok) {
+      const errorData = await response.json() as GouErrorData;
+      throw new Error(errorData.status?.message || `Failed to verify transaction: ${response.statusText}`);
+    }
+
+    const data = await response.json() as GouAPIResponse;
+
+    return {
+      id: data.internalReference.toString(),
+      status: this.mapStatus(data.status.status),
+      amount: parseFloat(data.amount.total),
+      currency: data.amount.currency,
+      paymentMethod: this.mapPaymentMethod(data.paymentMethod),
+      gatewayReference: data.authorization,
+      lastDigits: data.lastDigits,
+      franchise: data.franchise,
+      franchiseName: data.franchiseName,
+      issuerName: data.issuerName,
+      receipt: data.receipt,
+      authorization: data.authorization,
+      processorFields: data.processorFields,
+      additional: data.additional,
+      metadata: data
+    };
   }
 
-  public async refundTransaction(transactionId: string, amount?: number): Promise<any> {
+  public async refundTransaction(transactionId: string, amount?: number): Promise<GouPaymentResponse> {
     const auth = await this.generateAuth();
     
+    const requestBody = {
+      auth,
+      internalReference: transactionId,
+      action: 'refund',
+      ...(amount && {
+        payment: {
+          amount: {
+            total: amount
+          }
+        }
+      })
+    };
+
     const response = await fetch(`${this.baseUrl}/gateway/transaction`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        auth,
-        internalReference: transactionId,
-        action: 'refund',
-        ...(amount && { amount })
-      })
+      body: JSON.stringify(requestBody)
     });
 
-    return this.handleResponse(await response.json());
+    if (!response.ok) {
+      const errorData = await response.json() as GouErrorData;
+      throw new Error(errorData.status?.message || `Refund failed: ${response.statusText}`);
+    }
+
+    const data = await response.json() as GouRefundAPIResponse;
+
+    return {
+      id: data.internalReference.toString(),
+      status: this.mapStatus(data.status.status),
+      amount: parseFloat(data.amount.total),
+      currency: data.amount.currency,
+      paymentMethod: this.mapPaymentMethod(data.paymentMethod),
+      gatewayReference: data.authorization,
+      lastDigits: data.lastDigits,
+      franchise: data.franchise,
+      franchiseName: data.franchiseName,
+      issuerName: data.issuerName,
+      receipt: data.receipt,
+      authorization: data.authorization,
+      processorFields: data.processorFields,
+      additional: data.additional,
+      metadata: data
+    };
   }
 
-  private handleResponse(response: any): PaymentResponse {
-    const status = this.mapStatus(response.status.status);
-    
+  public getGatewayInfo(): Partial<GatewayConfigData> {
     return {
-      status,
-      statusCode: response.status.reason,
-      message: response.status.message,
-      transactionId: response.internalReference,
-      authorizationCode: response.authorization,
-      receiptNumber: response.receipt,
-      lastDigits: response.lastDigits,
-      paymentMethod: response.paymentMethod,
-      processorFields: response.processorFields,
-      responseData: response
+      provider: 'GOU',
+      endpoint: this.baseUrl,
+      webhook_url: this.webhookUrl,
+      test_mode: this.testMode
     };
   }
 
   private mapStatus(gouStatus: string): PaymentState {
     const statusMap: Record<string, PaymentState> = {
       'APPROVED': 'APPROVED',
-      'REJECTED': 'REJECTED',
+      'REJECTED': 'REJECTED', 
       'PENDING': 'PENDING',
-      'FAILED': 'FAILED'
+      'FAILED': 'FAILED',
+      'CANCELLED': 'CANCELLED'
     };
     return statusMap[gouStatus] || 'FAILED';
   }
 
-
-  private buildTokenInstrument(request: TokenizeRequest): TokenInstrument {
-    if (request.type === 'CREDIT_CARD') {
-      return {
-        card: {
-          number: request.instrument.card?.number!,
-          expiration: request.instrument.card?.expiration!,
-          cvv: request.instrument.card?.cvv!,
-          installments: request.instrument.card?.installments || '1'
-        }
-      };
-    } else if (request.type === 'PSE') {
-      return {
-        account: {
-          bankCode: request.instrument.account?.bankCode!,
-          bankName: request.instrument.account?.bankName!,
-          accountType: request.instrument.account?.accountType!,
-          accountNumber: request.instrument.account?.accountNumber!
-        }
-      };
-    }
-    throw new Error('Unsupported payment type');
-  }
-
-  async createToken(paymentInstrument: TokenizeRequest): Promise<TokenResponse> {
-    const auth = await this.generateAuth();
-    
-    const response = await fetch(`${this.baseUrl}/gateway/tokenize`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        auth,
-        instrument: this.buildTokenInstrument(paymentInstrument),
-        payer: paymentInstrument.payer,
-        ipAddress: paymentInstrument.ipAddress,
-        userAgent: paymentInstrument.userAgent
-      })
-    });
-
-    const tokenResponse = await response.json() as GouTokenResponse;
-
-    if (tokenResponse.status.status !== 'OK') {
-      throw new Error(tokenResponse.status.message || 'Failed to create token');
-    }
-
-    return {
-      token: tokenResponse.token,
-      subtoken: tokenResponse.subtoken,
-      franchise: tokenResponse.franchise,
-      franchiseName: tokenResponse.franchiseName,
-      lastDigits: tokenResponse.lastDigits,
-      validUntil: tokenResponse.validUntil
-    };
-  }
-
-  async invalidateToken(token: string): Promise<boolean> {
-    const auth = await this.generateAuth();
-    
-    const response = await fetch(`${this.baseUrl}/invalidate`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        auth,
-        instrument: {
-          token: {
-            token
-          }
-        }
-      })
-    });
-
-    const result = await response.json() as GouInvalidateResponse;
-    return result.status.status === 'OK';
-  }
-
-  public async testAuth(): Promise<any> {
+  public async testConnection(): Promise<any> {
     try {
       const auth = await this.generateAuth();
       
@@ -414,15 +470,13 @@ export class GouPaymentGateway extends BasePaymentGateway {
         },
         instrument: {
           card: {
-            number: '4110760000000008' // Test card number
+            number: '4110760000000008'
           }
         },
         ipAddress: '127.0.0.1',
         userAgent: 'PlaceToPay Test'
       };
-
-      console.log('Test auth request:', JSON.stringify(requestBody, null, 2));
-
+  
       const response = await fetch(`${this.baseUrl}/gateway/information`, {
         method: 'POST',
         headers: {
@@ -431,15 +485,14 @@ export class GouPaymentGateway extends BasePaymentGateway {
         },
         body: JSON.stringify(requestBody)
       });
-
+  
       if (!response.ok) {
-        const errorData:any = await response.json();
+        const errorData = await response.json() as GouErrorResponse;
         throw new Error(errorData.status?.message || `Auth test failed: ${response.statusText}`);
       }
-
-      const responseData = await response.json();
-      console.log('Auth test response:', JSON.stringify(responseData, null, 2));
-
+  
+      const responseData = await response.json() as GouAuthResponse;
+  
       return {
         status: 'success',
         auth,
@@ -459,67 +512,9 @@ export class GouPaymentGateway extends BasePaymentGateway {
         }
       };
     } catch (error) {
-      console.error('Test auth error:', error);
-      throw error;
-    }
-  }
-
-  public async testInformation(): Promise<any> {
-    try {
-      const authData = await this.generateAuth();
-      
-      const requestBody = {
-        ...authData,
-        locale: 'es_CO',
-        payment: {
-          reference: `TEST_${Date.now()}`,
-          description: 'Test payment information',
-          amount: {
-            currency: 'USD',
-            total: 1.00
-          }
-        },
-        instrument: {
-          card: {
-            number: '4110760000000008'
-          }
-        },
-        ipAddress: '127.0.0.1',
-        userAgent: 'Test'
-      };
-
-      const response = await fetch(`${this.baseUrl}/gateway/information`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        body: JSON.stringify(requestBody)
-      });
-
-      if (!response.ok) {
-        const errorData:any = await response.json();
-        throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
-      }
-
-      const responseData = await response.json();
+      console.error('Test connection error:', error);
       return {
-        request: requestBody,
-        response: responseData
-      };
-    } catch (error) {
-      console.error('Information test error:', error);
-      throw error;
-    }
-  }
-
-  public async testConnection(): Promise<any> {
-    try {
-      return await this.testAuth();
-    } catch (error) {
-      console.error('GOU connection test failed:', error);
-      return {
-        status: 'error',
+        status: 'error', 
         connection: false,
         gateway: 'GOU',
         error: error instanceof Error ? error.message : 'Unknown error',

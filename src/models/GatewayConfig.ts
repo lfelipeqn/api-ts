@@ -52,17 +52,23 @@ export class GatewayConfig extends Model<GatewayConfigAttributes, GatewayConfigC
 
     getConfigObject(): ConfigData {
       try {
-        return JSON.parse(this.config) as ConfigData;
+        // If config is already an object, stringify it first
+        const configStr = typeof this.config === 'object' ? 
+          JSON.stringify(this.config) : 
+          this.config;
+
+        return JSON.parse(configStr);
       } catch (error) {
         console.error('Error parsing config:', error);
+        console.error('Config value:', this.config);
         throw new Error('Invalid gateway configuration format');
       }
     }
-
+  
     setConfigObject(value: ConfigData): void {
       this.setDataValue('config', JSON.stringify(value));
     }
-  
+
     static initModel(sequelize: Sequelize): typeof GatewayConfig {
       GatewayConfig.init({
         id: {
@@ -91,6 +97,7 @@ export class GatewayConfig extends Model<GatewayConfigAttributes, GatewayConfigC
           },
           set(value: Record<string, any> | string) {
             if (typeof value === 'string') {
+              // Validate it's a valid JSON string
               try {
                 JSON.parse(value);
                 this.setDataValue('config', value);
@@ -98,6 +105,7 @@ export class GatewayConfig extends Model<GatewayConfigAttributes, GatewayConfigC
                 throw new Error('Invalid JSON string provided for config');
               }
             } else {
+              // Store object as JSON string
               this.setDataValue('config', JSON.stringify(value));
             }
           }
@@ -120,15 +128,8 @@ export class GatewayConfig extends Model<GatewayConfigAttributes, GatewayConfigC
         timestamps: true,
         underscored: true,
         hooks: {
-          beforeSave: (instance: GatewayConfig) => {
-            // Ensure config is stored as a JSON string
-            const config = instance.getDataValue('config');
-            if (typeof config !== 'string') {
-              instance.setDataValue('config', JSON.stringify(config));
-            }
-          },
           beforeValidate: (instance: GatewayConfig) => {
-            // Ensure config is valid JSON
+            // Ensure config is stored as a valid JSON string
             const config = instance.getDataValue('config');
             if (typeof config !== 'string') {
               instance.setDataValue('config', JSON.stringify(config));
