@@ -22,6 +22,8 @@ import { PromotionProducts } from '../models/PromotionProduct';
 import { Payment } from '../models/Payment';
 import { PaymentMethodConfig } from '../models/PaymentMethodConfig';
 import { GatewayConfig } from '../models/GatewayConfig';
+import { Order } from '../models/Order';
+import { OrderPriceHistory } from '../models/OrderPriceHistory';
 
 
 export interface Models {
@@ -49,6 +51,9 @@ export interface Models {
   Payment: typeof Payment;
   PaymentMethodConfig: typeof PaymentMethodConfig;
   GatewayConfig: typeof GatewayConfig;
+  Order: typeof Order;
+  OrderPriceHistory: typeof OrderPriceHistory;
+  
 }
 
 export interface Database {

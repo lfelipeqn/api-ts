@@ -23,6 +23,8 @@ import { PromotionProducts } from '../models/PromotionProduct';
 import { Payment } from '../models/Payment';
 import { PaymentMethodConfig } from '../models/PaymentMethodConfig';
 import { GatewayConfig } from '../models/GatewayConfig';
+import { Order } from '../models/Order';
+import { OrderPriceHistory } from '../models/OrderPriceHistory';
 import { Models } from '../types/database';
 
 
@@ -56,7 +58,9 @@ export const initializeDatabase = () => {
     PromotionProducts: PromotionProducts.initModel(sequelize),
     Payment: Payment.initModel(sequelize),
     PaymentMethodConfig: PaymentMethodConfig.initModel(sequelize),
-    GatewayConfig: GatewayConfig.initModel(sequelize)
+    GatewayConfig: GatewayConfig.initModel(sequelize),
+    Order: Order.initModel(sequelize),
+    OrderPriceHistory: OrderPriceHistory.initModel(sequelize),
   };
 
   // Then initialize associations

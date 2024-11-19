@@ -4,8 +4,11 @@ import { PaymentGatewayService } from '../services/PaymentGatewayService';
 import { 
   PaymentMethodType, 
   PSEPaymentRequest, 
-  PaymentGateway 
+  PaymentGateway, 
+  CreditCardPaymentRequest,
+  PaymentCustomer
 } from '../types/payment';
+import {customerSchema, cardTokenPaymentSchema, processPaymentSchema, CardTokenPaymentData, ProcessPaymentData } from '../types/payment.schemas'
 import { z } from 'zod';
 
 const router = Router();
@@ -38,22 +41,6 @@ const psePaymentSchema = z.object({
     })
   }),
   metadata: z.record(z.any()).optional()
-});
-
-
-const cardTokenPaymentSchema = z.object({
-  paymentGateway: z.enum(['OPENPAY', 'GOU']),
-  amount: z.number().positive(),
-  currency: z.string().default('COP'),
-  description: z.string(),
-  tokenId: z.string(),
-  deviceSessionId: z.string(),
-  customer: z.object({
-    name: z.string(),
-    last_name: z.string().optional(),
-    email: z.string().email(),
-    phone_number: z.string().optional()
-  })
 });
 
 // New schema for creating card token
@@ -225,35 +212,36 @@ router.post('/card', async (req: AuthenticatedRequest, res: Response) => {
       throw new Error(`Payment gateway ${validatedData.paymentGateway} is not enabled for credit card payments`);
     }
 
-    // Log payment request (excluding sensitive data)
-    console.log('Card Payment Request:', {
-      gateway: validatedData.paymentGateway,
+    const paymentRequest: CreditCardPaymentRequest = {
       amount: validatedData.amount,
       currency: validatedData.currency,
       description: validatedData.description,
+      tokenId: validatedData.tokenId,
+      deviceSessionId: validatedData.deviceSessionId,
       customer: {
         name: validatedData.customer.name,
-        email: validatedData.customer.email
-      },
-      userId: req.user?.id,
-      timestamp: new Date().toISOString()
-    });
+        last_name: validatedData.customer.last_name,
+        email: validatedData.customer.email,
+        phone_number: validatedData.customer.phone_number,
+        requires_account: validatedData.customer.requires_account || false
+      }
+    };
 
-    const response = await (gateway as any).processCreditCardPayment(
-      validatedData.amount,
-      validatedData.currency,
-      validatedData.tokenId,
-      validatedData.customer,
-      validatedData.deviceSessionId
-    );
+    const response = await gateway.processCreditCardPayment(paymentRequest);
 
     res.json({
       status: 'success',
       data: response
     });
-
   } catch (error) {
     console.error('Card payment error:', error);
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Invalid payment data',
+        details: error.errors
+      });
+    }
     res.status(500).json({
       status: 'error',
       message: error instanceof Error ? error.message : 'Failed to process card payment'

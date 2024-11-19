@@ -142,8 +142,8 @@ import {
             },
             transaction: t
           });
-    
-          if (existingCart) {
+      
+          if (existingCart && existingCart.id !== this.id) {
             // Merge this cart's items into the existing cart
             const details = await this.getDetails({ transaction: t });
             for (const detail of details) {
@@ -154,11 +154,11 @@ import {
                 t
               );
             }
-    
+      
             // Mark this cart as converted
-            /**await this.update({
-              status: 'converted'
-            }, { transaction: t });*/
+            await this.update({
+              status: 'ordered'
+            }, { transaction: t });
           } else {
             // Assign this cart to the user
             await this.update({
@@ -166,7 +166,7 @@ import {
               expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
             }, { transaction: t });
           }
-    
+      
           if (!transaction) {
             await t.commit();
           }
@@ -177,6 +177,7 @@ import {
           throw error;
         }
       }
+      
 
     static async getOrCreateUserCart(userId: number): Promise<Cart> {
       const cart = await Cart.findOne({

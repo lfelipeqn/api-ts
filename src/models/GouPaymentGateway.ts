@@ -6,6 +6,7 @@ import {
   PSEBank,
   PaymentState,
   PaymentMethodType,
+  CreditCardPaymentRequest
 } from '../types/payment';
 import { randomBytes, createHash } from 'crypto';
 
@@ -522,4 +523,9 @@ export class GouPaymentGateway implements PaymentGatewayInterface {
       };
     }
   }
+
+  public async processCreditCardPayment(request: CreditCardPaymentRequest): Promise<PaymentResponse> {
+    throw new Error('Credit card payments not supported by GOU gateway');
+  }
+
 }

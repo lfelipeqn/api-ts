@@ -73,6 +73,7 @@ export interface PSEBank {
 export interface PaymentGatewayInterface {
   getGatewayInfo(): Partial<GatewayConfig>;
   processPSEPayment(request: PSEPaymentRequest): Promise<PaymentResponse>;
+  processCreditCardPayment(request: CreditCardPaymentRequest): Promise<PaymentResponse>;
   verifyTransaction(transactionId: string): Promise<PaymentResponse>;
   refundTransaction(transactionId: string, amount?: number): Promise<PaymentResponse>;
   getBanks(): Promise<PSEBank[]>;
@@ -170,14 +171,6 @@ export interface GatewayConfigAttributes {
   updated_at: Date;
 }
 
-export interface OpenPayCustomer {
-  name: string;
-  last_name: string;
-  email: string;
-  phone_number: string;
-  requires_account?: boolean;
-}
-
 export interface CustomerAddress {
   department: string;
   city: string;
@@ -194,14 +187,31 @@ export interface PSECustomer {
   address?: CustomerAddress;
 }
 
+export interface PaymentCustomer {
+  name: string;
+  last_name: string;
+  email: string;
+  phone_number: string;
+  requires_account?: boolean;
+}
+
 export interface PSEPaymentRequest {
   amount: number;
   currency: string;
   description: string;
   redirectUrl: string;
-  customer: PSECustomer;
+  customer: PSECustomer; //PaymentCustomer
   metadata?: Record<string, any>;
 }
+export interface CreditCardPaymentRequest {
+  amount: number;
+  currency: string;
+  tokenId: string;
+  deviceSessionId?: string;
+  description: string;
+  customer: PaymentCustomer;
+}
+
 
 // Add OpenPay specific interfaces
 export interface OpenPayBaseRequest {
@@ -229,4 +239,33 @@ export interface OpenPayCustomerRequest extends OpenPayBaseRequest {
   };
 }
 
+
+export interface PaymentDetails {
+  id: number;
+  transaction_id: string;
+  reference: string;
+  amount: number;
+  currency: string;
+  state: PaymentState;
+  gateway_info?: {
+    provider: string;
+    reference?: string;
+    authorization?: string;
+    transaction_date?: string;
+  };
+  payment_method?: {
+    id: number;
+    type: string;
+    name: string;
+  };
+  metadata?: any;
+}
+
+export interface ProcessedPaymentResponse extends PaymentResponse {
+  paymentDetails: PaymentDetails;
+}
+
 export type OpenPayPaymentRequest = OpenPayBaseRequest | OpenPayCustomerRequest;
+
+// Update the OpenPay customer type to match
+export type OpenPayCustomer = PaymentCustomer;

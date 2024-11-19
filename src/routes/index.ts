@@ -7,6 +7,7 @@ import authRoutes from './auth.routes';
 import cartRoutes from './cart.routes';
 import paymentConfigRoutes from './payment-config.routes';
 import paymentTestRoutes from './payment-test.routes';
+import checkoutRoutes from './checkout.routes';
 
 const router = Router();
 
@@ -32,6 +33,7 @@ apiRouter.use('/', productRoutes); // This will preserve existing product routes
 apiRouter.use('/', cartRoutes);
 apiRouter.use('/payments', paymentConfigRoutes);
 apiRouter.use('/payments', paymentTestRoutes);
+apiRouter.use('/checkout', checkoutRoutes);
 
 export { connectRedis };
 export default router;

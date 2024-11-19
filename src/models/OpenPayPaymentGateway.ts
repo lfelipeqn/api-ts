@@ -9,7 +9,8 @@ import {
   PaymentResponse,
   PSEBank,
   PaymentState,
-  PaymentMethodType
+  PaymentMethodType,
+  CreditCardPaymentRequest
 } from '../types/payment';
 
 interface OpenPayCardData {
@@ -254,25 +255,25 @@ export class OpenPayPaymentGateway implements PaymentGatewayInterface {
   }
   
 
-  public async processCreditCardPayment(
-    amount: number, 
-    currency: string,
-    tokenId: string, 
-    customer: OpenPayCustomer,
-    deviceSessionId?: string
-  ): Promise<PaymentResponse> {
+  public async processCreditCardPayment(request: CreditCardPaymentRequest): Promise<PaymentResponse> {
     try {
       const paymentRequest = {
         method: 'card',
-        source_id: tokenId,
-        amount,
-        currency,
-        description: 'Credit card payment',
-        device_session_id: deviceSessionId,
-        customer,
+        source_id: request.tokenId,
+        amount: request.amount,
+        currency: request.currency,
+        description: request.description,
+        device_session_id: request.deviceSessionId,
+        customer: {
+          name: request.customer.name,
+          last_name: request.customer.last_name,
+          email: request.customer.email,
+          phone_number: request.customer.phone_number,
+          requires_account: request.customer.requires_account
+        },
         iva: "19", // Required for Colombian transactions
         use_3d_secure: false,
-        redirect_url: "https://myecommerce.co/success", // Optional, for 3D secure flows
+        redirect_url: "https://myecommerce.co/success" // Optional, for 3D secure flows
       };
 
       console.log('Sending payment request to OpenPay:', {
@@ -282,7 +283,7 @@ export class OpenPayPaymentGateway implements PaymentGatewayInterface {
       });
 
       const response = await this.makeRequest<OpenPayChargeResponse>('/charges', 'POST', paymentRequest);
-
+      
       if (!this.isOpenPayChargeResponse(response)) {
         throw new Error('Invalid response from OpenPay');
       }
@@ -290,8 +291,8 @@ export class OpenPayPaymentGateway implements PaymentGatewayInterface {
       return {
         id: response.id,
         status: this.mapStatus(response.status),
-        amount,
-        currency,
+        amount: request.amount,
+        currency: request.currency,
         paymentMethod: 'CREDIT_CARD',
         gatewayReference: response.authorization,
         metadata: {
