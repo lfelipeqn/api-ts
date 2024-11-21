@@ -1,3 +1,4 @@
+import { Optional } from 'sequelize';
 // Payment Method Types
 export const PAYMENT_METHOD_TYPES = ['PSE', 'CREDIT_CARD', 'DEBIT_CARD', 'TRANSFER', 'CASH'] as const;
 export type PaymentMethodType = typeof PAYMENT_METHOD_TYPES[number];
@@ -195,24 +196,6 @@ export interface PaymentCustomer {
   requires_account?: boolean;
 }
 
-export interface PSEPaymentRequest {
-  amount: number;
-  currency: string;
-  description: string;
-  redirectUrl: string;
-  customer: PSECustomer; //PaymentCustomer
-  metadata?: Record<string, any>;
-}
-export interface CreditCardPaymentRequest {
-  amount: number;
-  currency: string;
-  tokenId: string;
-  deviceSessionId?: string;
-  description: string;
-  customer: PaymentCustomer;
-}
-
-
 // Add OpenPay specific interfaces
 export interface OpenPayBaseRequest {
   method: string;
@@ -269,3 +252,93 @@ export type OpenPayPaymentRequest = OpenPayBaseRequest | OpenPayCustomerRequest;
 
 // Update the OpenPay customer type to match
 export type OpenPayCustomer = PaymentCustomer;
+
+
+// Base Gateway Configuration
+export interface BaseGatewayConfig {
+  apiKey: string;
+  apiSecret: string;
+  endpoint: string;
+  webhookUrl?: string;
+  testMode?: boolean;
+}
+
+// Base payment request interface
+export interface BasePaymentRequest {
+  amount: number;
+  currency: string;
+  description: string;
+  metadata?: {
+    orderId?: string;
+    [key: string]: any;
+  };
+}
+
+export interface BaseCustomer {
+  name: string;
+  last_name: string;
+  email: string;
+  phone_number: string;
+  requires_account?: boolean;
+}
+
+// Credit card payment request
+export interface CreditCardPaymentRequest extends BasePaymentRequest {
+  tokenId: string;
+  deviceSessionId: string;
+  customer: BaseCustomer;
+}
+
+// PSE payment request
+export interface PSEPaymentRequest extends BasePaymentRequest {
+  redirectUrl: string;
+  customer: BaseCustomer & {
+    address?: {
+      department: string;
+      city: string;
+      additional: string;
+    };
+  };
+}
+
+// Payment response interface
+export interface PaymentResponse {
+  id: string;
+  status: PaymentState;
+  amount: number;
+  currency: string;
+  paymentMethod: PaymentMethodType;
+  gatewayReference?: string;
+  redirectUrl?: string;
+  orderId?: string;
+  metadata?: Record<string, any>;
+}
+
+export interface PaymentAttributes {
+  id: number;
+  order_id: number;
+  payment_method_id: number;
+  transaction_id: string;
+  reference: string;
+  amount: number;
+  currency: string;
+  state: PaymentState;
+  state_description: string;
+  gateway: PaymentGateway;
+  gateway_response: string | null;
+  error_message: string | null;
+  url: string | null;
+  attempts: number;
+  last_attempt_at: Date | null;
+  external_reference: string | null;
+  metadata: string | null;
+  user_id: number | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+// Payment Creation Attributes
+export type PaymentCreationAttributes = Optional<
+  PaymentAttributes,
+  'id' | 'created_at' | 'updated_at' | 'gateway_response' | 'error_message' | 'url' | 'external_reference' | 'metadata'
+>;

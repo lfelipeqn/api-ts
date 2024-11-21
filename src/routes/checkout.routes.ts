@@ -10,7 +10,9 @@ import { Address } from '../models/Address';
 import { Agency } from '../models/Agency';
 import { Order } from  '../models/Order';
 import { Cart } from '../models/Cart';
-import { CreditCardPaymentRequest, PSEPaymentRequest } from '../types/payment';
+
+const router = Router();
+const checkoutService = CheckoutService.getInstance();
 
 // Extended request type for checkout
 interface CheckoutRequest extends AuthenticatedRequest {
@@ -27,11 +29,8 @@ interface CheckoutRequest extends AuthenticatedRequest {
   };
 }
 
-const router = Router();
-const checkoutService = CheckoutService.getInstance();
-
-// Common customer schema
-const customerSchema = z.object({
+// Base schemas
+const baseCustomerSchema = z.object({
   name: z.string().min(1, 'Name is required'),
   last_name: z.string().min(1, 'Last name is required'),
   email: z.string().email('Valid email is required'),
@@ -39,30 +38,24 @@ const customerSchema = z.object({
   requires_account: z.boolean().optional()
 });
 
-// Schema for PSE customer with address
-const pseCustomerSchema = customerSchema.extend({
-  address: z.object({
-    department: z.string().min(1, 'Department is required'),
-    city: z.string().min(1, 'City is required'),
-    additional: z.string().min(1, 'Address is required')
-  }).optional()
-});
-
-// Credit card payment schema
+// Card payment schema
 const creditCardPaymentSchema = z.object({
   tokenId: z.string().min(1, 'Token ID is required'),
   deviceSessionId: z.string().min(1, 'Device session ID is required'),
-  customer: customerSchema
+  customer: baseCustomerSchema
 });
 
 // PSE payment schema
 const psePaymentSchema = z.object({
   redirectUrl: z.string().url('Valid redirect URL is required'),
-  customer: pseCustomerSchema
+  customer: baseCustomerSchema.extend({
+    address: z.object({
+      department: z.string().min(1, 'Department is required'),
+      city: z.string().min(1, 'City is required'),
+      additional: z.string().min(1, 'Additional address is required')
+    }).optional()
+  })
 });
-
-// Combined payment schema that validates based on payment method
-const paymentSchema = z.union([creditCardPaymentSchema, psePaymentSchema]);
 
 // Validation schemas
 const initCheckoutSchema = z.object({
@@ -91,35 +84,76 @@ const paymentMethodSchema = z.object({
 
 // Middleware to validate checkout session
 const validateCheckoutSession = async (req: CheckoutRequest, res: Response, next: NextFunction) => {
-  const sessionId = req.headers['x-checkout-session'];
-  if (!sessionId) {
-    return res.status(400).json({
-      status: 'error',
-      message: 'Checkout session not found'
-    });
-  }
+  try {
+    const sessionId = req.headers['x-checkout-session'];
+    if (!sessionId) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Checkout session not found'
+      });
+    }
 
-  const session = await checkoutService.getSession(sessionId as string);
-  if (!session) {
-    return res.status(400).json({
-      status: 'error',
-      message: 'Invalid or expired checkout session'
-    });
-  }
+    const session = await checkoutService.getSession(sessionId as string);
+    if (!session) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Invalid or expired checkout session'
+      });
+    }
 
-  // Verify session belongs to authenticated user
-  if (req.user && session.user_id && session.user_id !== req.user.id) {
-    return res.status(403).json({
-      status: 'error',
-      message: 'Session does not belong to current user'
-    });
-  }
+    // Verify session belongs to authenticated user
+    if (req.user && session.user_id && session.user_id !== req.user.id) {
+      return res.status(403).json({
+        status: 'error',
+        message: 'Session does not belong to current user'
+      });
+    }
 
-  req.checkoutSession = session;
-  next();
+    req.checkoutSession = session;
+    next();
+  } catch (error) {
+    next(error);
+  }
 };
 
-router.post('/init', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+// Specific error handling middleware for checkout routes
+const checkoutErrorHandler = (err: any, req: Request, res: Response, next: NextFunction) => {
+  console.error('Checkout error:', err);
+
+  if (res.headersSent) {
+    console.warn('Headers already sent, passing to default error handler');
+    return next(err);
+  }
+
+  // Handle specific error types
+  if (err instanceof z.ZodError) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'Validation failed',
+      errors: err.errors
+    });
+  }
+
+  if (err.name === 'SessionError') {
+    return res.status(401).json({
+      status: 'error',
+      message: err.message
+    });
+  }
+
+  // Default error response
+  return res.status(500).json({
+    status: 'error',
+    message: err instanceof Error ? err.message : 'Internal server error',
+    ...(process.env.NODE_ENV === 'development' && {
+      stack: err.stack
+    })
+  });
+};
+
+router.use(authMiddleware);
+
+router.post('/init', authMiddleware, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const { cartId } = initCheckoutSchema.parse(req.body);
     const userId = req.user?.id;
@@ -131,7 +165,6 @@ router.post('/init', authMiddleware, async (req: AuthenticatedRequest, res: Resp
       });
     }
 
-    // Find user's active cart
     const cart = await Cart.findOne({
       where: {
         id: cartId,
@@ -147,10 +180,8 @@ router.post('/init', authMiddleware, async (req: AuthenticatedRequest, res: Resp
       });
     }
 
-    // Create checkout session
     const session = await checkoutService.createSession(cartId, userId);
-
-    res.json({
+    return res.json({
       status: 'success',
       data: {
         sessionId: session.id,
@@ -158,144 +189,119 @@ router.post('/init', authMiddleware, async (req: AuthenticatedRequest, res: Resp
       }
     });
   } catch (error) {
-    console.error('Error initializing checkout:', error);
-    res.status(500).json({
-      status: 'error',
-      message: error instanceof Error ? error.message : 'Failed to initialize checkout'
-    });
+    return next(error);
   }
 });
 
-router.use(authMiddleware);
+// Updated /delivery endpoint
+router.post('/delivery', validateCheckoutSession, async (req: CheckoutRequest, res: Response, next: NextFunction) => {
+  try {
+    const { type, addressId, agencyId } = deliveryMethodSchema.parse(req.body);
+    const session = req.checkoutSession!;
 
-// Set delivery method
-router.post(
-  '/delivery',
-  validateCheckoutSession,
-  async (req: CheckoutRequest, res: Response) => {
-    try {
-      const { type, addressId, agencyId } = deliveryMethodSchema.parse(req.body);
-      const session = req.checkoutSession!;
-
-      // Verify address belongs to user if shipping
-      if (type === 'SHIPPING' && addressId) {
-        const address = await Address.findOne({
-          where: { 
-            id: addressId,
-            user_id: req.user!.id
-          }
-        });
-
-        if (!address) {
-          return res.status(400).json({
-            status: 'error',
-            message: 'Invalid delivery address'
-          });
+    if (type === 'SHIPPING' && addressId) {
+      const address = await Address.findOne({
+        where: { 
+          id: addressId,
+          user_id: req.user!.id
         }
-      }
+      });
 
-      // Verify agency exists if pickup
-      if (type === 'PICKUP' && agencyId) {
-        const agency = await Agency.findByPk(agencyId);
-        if (!agency) {
-          return res.status(400).json({
-            status: 'error',
-            message: 'Invalid pickup agency'
-          });
-        }
-      }
-
-      const isValid = await checkoutService.validateDeliveryMethod(
-        session.id,
-        type,
-        addressId,
-        agencyId
-      );
-
-      if (!isValid) {
+      if (!address) {
         return res.status(400).json({
           status: 'error',
-          message: 'Invalid delivery method configuration'
+          message: 'Invalid delivery address'
         });
       }
+    }
 
-      const updatedSession = await checkoutService.updateSession(session.id, {
-        delivery_type: type,
-        delivery_address_id: addressId || null,
-        pickup_agency_id: agencyId || null
-      });
+    if (type === 'PICKUP' && agencyId) {
+      const agency = await Agency.findByPk(agencyId);
+      if (!agency) {
+        return res.status(400).json({
+          status: 'error',
+          message: 'Invalid pickup agency'
+        });
+      }
+    }
 
-      res.json({
-        status: 'success',
-        data: updatedSession
-      });
-    } catch (error) {
-      console.error('Error setting delivery method:', error);
-      res.status(500).json({
+    const isValid = await checkoutService.validateDeliveryMethod(
+      session.id,
+      type,
+      addressId,
+      agencyId
+    );
+
+    if (!isValid) {
+      return res.status(400).json({
         status: 'error',
-        message: error instanceof Error ? error.message : 'Failed to set delivery method'
+        message: 'Invalid delivery method configuration'
       });
     }
+
+    const updatedSession = await checkoutService.updateSession(session.id, {
+      delivery_type: type,
+      delivery_address_id: addressId || null,
+      pickup_agency_id: agencyId || null
+    });
+
+    return res.json({
+      status: 'success',
+      data: updatedSession
+    });
+  } catch (error) {
+    return next(error);
+  }
 });
 
-// Set payment method
-router.post(
-  '/payment',
-  validateCheckoutSession,
-  async (req: CheckoutRequest, res: Response) => {
-    try {
-      const { paymentMethodId } = paymentMethodSchema.parse(req.body);
-      const session = req.checkoutSession!;
+// Updated /payment endpoint
+router.post('/payment', validateCheckoutSession, async (req: CheckoutRequest, res: Response, next: NextFunction) => {
+  try {
+    const { paymentMethodId } = paymentMethodSchema.parse(req.body);
+    const session = req.checkoutSession!;
 
-      // Verify payment method is active
-      const paymentMethod = await PaymentMethodConfig.findOne({
-        where: { 
-          id: paymentMethodId,
-          enabled: true
-        }
-      });
+    const validation = await checkoutService.validatePaymentMethod(
+      session.id,
+      paymentMethodId
+    );
 
-      if (!paymentMethod) {
-        return res.status(400).json({
-          status: 'error',
-          message: 'Invalid or inactive payment method'
-        });
-      }
-
-      const isValid = await checkoutService.validatePaymentMethod(
-        session.id,
-        paymentMethodId
-      );
-
-      if (!isValid) {
-        return res.status(400).json({
-          status: 'error',
-          message: 'Invalid payment method for this order'
-        });
-      }
-
-      const updatedSession = await checkoutService.updateSession(session.id, {
-        payment_method_id: paymentMethodId
-      });
-
-      res.json({
-        status: 'success',
-        data: updatedSession
-      });
-    } catch (error) {
-      console.error('Error setting payment method:', error);
-      res.status(500).json({
+    if (!validation.valid) {
+      return res.status(400).json({
         status: 'error',
-        message: error instanceof Error ? error.message : 'Failed to set payment method'
+        message: validation.error || 'Invalid payment method',
+        details: validation
       });
     }
+
+    const updatedSession = await checkoutService.updateSession(session.id, {
+      payment_method_id: paymentMethodId
+    });
+
+    return res.json({
+      status: 'success',
+      data: {
+        session_id: updatedSession!.id,
+        payment_method_id: updatedSession!.payment_method_id,
+        delivery_type: updatedSession!.delivery_type,
+        expires_at: updatedSession!.expires_at
+      }
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Invalid request data',
+        details: error.errors
+      });
+    }
+    return next(error);
+  }
 });
 
 // Create order
-router.post(
-  '/order',
+router.post('/order', 
   validateCheckoutSession,
-  async (req: CheckoutRequest, res: Response) => {
+  async (req: CheckoutRequest, res: Response, next: NextFunction) => {
     try {
       const session = req.checkoutSession!;
 
@@ -308,18 +314,14 @@ router.post(
         });
       }
 
+      // Create order
       const order = await checkoutService.createOrder(session.id);
-      if (!order) {
-        return res.status(400).json({
-          status: 'error',
-          message: 'Failed to create order'
-        });
-      }
 
       // Get order summary
       const summary = await order.getOrderSummary();
 
-      res.status(201).json({
+      // Single return point
+      return res.status(201).json({
         status: 'success',
         data: {
           orderId: order.id,
@@ -327,29 +329,22 @@ router.post(
         }
       });
     } catch (error) {
-      console.error('Error creating order:', error);
-      res.status(500).json({
-        status: 'error',
-        message: error instanceof Error ? error.message : 'Failed to create order'
-      });
+      // Let error handling middleware deal with it
+      return next(error);
     }
 });
 
+
 // Process payment
-router.post('/process-payment/:orderId', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+router.post('/process-payment/:orderId', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const orderId = parseInt(req.params.orderId);
-    
-    // Debug request information
-    console.log('Request headers:', req.headers);
-    console.log('Request body type:', typeof req.body);
-    console.log('Raw request body:', JSON.stringify(req.body, null, 2));
 
-    // Find the order and validate ownership
+    // Find and validate order
     const order = await Order.findOne({
-      where: {
+      where: { 
         id: orderId,
-        user_id: req.user!.id
+        user_id: req.user!.id 
       },
       include: [{
         model: PaymentMethodConfig,
@@ -357,91 +352,23 @@ router.post('/process-payment/:orderId', authMiddleware, async (req: Authenticat
       }]
     });
 
-    if (!order) {
+    if (!order || !order.paymentMethod) {
       return res.status(404).json({
         status: 'error',
-        message: 'Order not found'
+        message: 'Order not found or payment method not configured'
       });
     }
 
-    if (!order.paymentMethod) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Payment method not configured for order'
-      });
-    }
-
-    console.log('Payment method type:', order.paymentMethod.type);
-    console.log('Request body before validation:', {
-      tokenId: req.body?.tokenId,
-      deviceSessionId: req.body?.deviceSessionId,
-      customer: req.body?.customer,
-      hasBody: !!req.body
-    });
-
-    // Validate request data based on payment method
-    let paymentData;
+    let validatedData;
     try {
       if (order.paymentMethod.type === 'CREDIT_CARD') {
-        const result = creditCardPaymentSchema.safeParse(req.body);
-        
-        if (!result.success) {
-          console.log('Validation errors:', result.error.errors);
-          return res.status(400).json({
-            status: 'error',
-            message: 'Invalid payment data',
-            errors: result.error.errors.map(err => ({
-              field: err.path.join('.'),
-              message: err.message
-            }))
-          });
-        }
-        
-        paymentData = result.data;
+        validatedData = creditCardPaymentSchema.parse(req.body);
       } else if (order.paymentMethod.type === 'PSE') {
-        const result = psePaymentSchema.safeParse(req.body);
-        
-        if (!result.success) {
-          console.log('Validation errors:', result.error.errors);
-          return res.status(400).json({
-            status: 'error',
-            message: 'Invalid payment data',
-            errors: result.error.errors.map(err => ({
-              field: err.path.join('.'),
-              message: err.message
-            }))
-          });
-        }
-        
-        paymentData = result.data;
+        validatedData = psePaymentSchema.parse(req.body);
       } else {
         throw new Error(`Unsupported payment method: ${order.paymentMethod.type}`);
       }
-
-      console.log('Validated payment data:', {
-        method: order.paymentMethod.type,
-        hasPaymentData: !!paymentData,
-        amount: order.total_amount,
-        currency: order.currency
-      });
-
-      // Process payment using checkout service
-      const paymentResponse = await checkoutService.processPayment(orderId, paymentData);
-
-      // Return response with payment and order details
-      return res.json({
-        status: 'success',
-        data: {
-          payment: paymentResponse,
-          paymentDetails: paymentResponse.paymentDetails,
-          orderId: order.id,
-          orderState: order.state
-        }
-      });
-
     } catch (validationError) {
-      console.error('Validation or processing error:', validationError);
-      
       if (validationError instanceof z.ZodError) {
         return res.status(400).json({
           status: 'error',
@@ -452,21 +379,27 @@ router.post('/process-payment/:orderId', authMiddleware, async (req: Authenticat
           }))
         });
       }
-
       throw validationError;
     }
 
-  } catch (error) {
-    console.error('Payment processing error:', error);
-    
-    res.status(500).json({
-      status: 'error',
-      message: error instanceof Error ? error.message : 'Failed to process payment',
-      details: process.env.NODE_ENV === 'development' ? error : undefined
+    // Process payment
+    const paymentResponse = await checkoutService.processPayment(orderId, validatedData);
+
+    return res.json({
+      status: 'success',
+      data: {
+        payment: paymentResponse,
+        paymentDetails: paymentResponse.paymentDetails,
+        orderId: order.id,
+        orderState: order.state
+      }
     });
+
+  } catch (error) {
+    return next(error);
   }
 });
 
-
+router.use(checkoutErrorHandler);
 
 export default router;

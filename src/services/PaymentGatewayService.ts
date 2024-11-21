@@ -15,19 +15,37 @@ interface ConfigData extends GatewayConfigData {
   supportedMethods: PaymentMethodMapping;
 }
 
+export interface GatewayMethodConfig {
+  gatewayId: number;
+  enabled: boolean;
+  isDefault: boolean;
+  supportedCurrencies: string[];
+  minAmount?: number;
+  maxAmount?: number;
+}
+
+export interface GatewayMethodMapping {
+  CREDIT_CARD: GatewayMethodConfig[];
+  PSE: GatewayMethodConfig[];
+  [key: string]: GatewayMethodConfig[];
+}
+
 export class PaymentGatewayService {
   private static instance: PaymentGatewayService;
   private readonly gateways = new Map<PaymentGateway, PaymentGatewayInterface>();
-  private readonly methodMappings = new Map<PaymentMethodType, PaymentGateway>();
+  private methodConfigurations: Record<PaymentMethodType, GatewayMethodConfig[]>;
 
   private constructor() {
-    // Default payment method mappings - OPENPAY as default gateway
-    this.methodMappings.set('PSE', 'OPENPAY');
-    this.methodMappings.set('CREDIT_CARD', 'OPENPAY');
-    this.methodMappings.set('DEBIT_CARD', 'OPENPAY');
-    this.methodMappings.set('TRANSFER', 'OPENPAY');
-    this.methodMappings.set('CASH', 'OPENPAY');
+    // Initialize empty configurations for all payment methods
+    this.methodConfigurations = {
+      PSE: [],
+      CREDIT_CARD: [],
+      DEBIT_CARD: [],
+      TRANSFER: [],
+      CASH: []
+    };
   }
+
 
   public static getInstance(): PaymentGatewayService {
     if (!PaymentGatewayService.instance) {
@@ -69,6 +87,66 @@ export class PaymentGatewayService {
     };
   }
 
+  public async configureGatewayMethod(
+    method: PaymentMethodType,
+    config: GatewayMethodConfig
+  ): Promise<void> {
+    // Ensure method exists in configurations
+    if (!this.methodConfigurations[method]) {
+      this.methodConfigurations[method] = [];
+    }
+
+    // If setting as default, remove default from others
+    if (config.isDefault) {
+      this.methodConfigurations[method] = this.methodConfigurations[method].map(conf => ({
+        ...conf,
+        isDefault: false
+      }));
+    }
+
+    // Add or update configuration
+    const existingIndex = this.methodConfigurations[method]
+      .findIndex(conf => conf.gatewayId === config.gatewayId);
+
+    if (existingIndex >= 0) {
+      this.methodConfigurations[method][existingIndex] = config;
+    } else {
+      this.methodConfigurations[method].push(config);
+    }
+  }
+
+  // Get default gateway for a payment method
+  public async getDefaultGateway(
+    method: PaymentMethodType,
+    amount?: number,
+    currency?: string
+  ): Promise<PaymentGatewayInterface> {
+    const methodConfigs = this.methodConfigurations[method] || [];
+    const defaultConfig = methodConfigs.find(conf => 
+      conf.isDefault && 
+      conf.enabled && 
+      (!amount || (
+        (!conf.minAmount || amount >= conf.minAmount) &&
+        (!conf.maxAmount || amount <= conf.maxAmount)
+      )) &&
+      (!currency || conf.supportedCurrencies.includes(currency))
+    );
+
+    if (!defaultConfig) {
+      throw new Error(`No default gateway configured for ${method}`);
+    }
+
+    const provider = defaultConfig.gatewayId === 1 ? 'GOU' : 'OPENPAY'; // Map ID to provider
+    return this.getGateway(provider);
+  }
+
+  // Get all enabled gateways for a payment method
+  public getEnabledGateways(method: PaymentMethodType): GatewayMethodConfig[] {
+    return (this.methodConfigurations[method] || [])
+      .filter(config => config.enabled)
+      .sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0));
+  }
+
   public async initializeGateways(): Promise<void> {
     const configs = await GatewayConfigModel.findAll({
       where: { is_active: true }
@@ -82,6 +160,7 @@ export class PaymentGatewayService {
   private async initializeGateway(dbConfig: GatewayConfigModel): Promise<void> {
     const config = this.parseConfig(dbConfig);
     const provider = config.provider;
+    const gatewayId = this.getGatewayIdForProvider(provider);
 
     let gateway: PaymentGatewayInterface;
 
@@ -98,26 +177,51 @@ export class PaymentGatewayService {
 
     this.gateways.set(provider, gateway);
     
-    // Update method mappings based on config
+    // Update method configurations based on config
     if (config.supportedMethods) {
       Object.entries(config.supportedMethods).forEach(([method, settings]) => {
         const paymentMethod = method as PaymentMethodType;
         if (settings.enabled) {
-          this.methodMappings.set(paymentMethod, provider);
+          // Create gateway configuration
+          const gatewayConfig: GatewayMethodConfig = {
+            gatewayId,
+            enabled: settings.enabled,
+            isDefault: false, // Set default based on your business logic
+            supportedCurrencies: settings.supportedCurrencies,
+            minAmount: settings.minAmount,
+            maxAmount: settings.maxAmount
+          };
+
+          // Add to configurations
+          this.methodConfigurations[paymentMethod] = 
+            this.methodConfigurations[paymentMethod] || [];
+          this.methodConfigurations[paymentMethod].push(gatewayConfig);
         }
       });
     }
   }
 
   public async getGatewayForMethod(method: PaymentMethodType): Promise<PaymentGatewayInterface> {
-    const gatewayProvider = this.methodMappings.get(method);
-    if (!gatewayProvider) {
-      // Default to OPENPAY if no specific mapping exists
-      this.methodMappings.set(method, 'OPENPAY');
-      return this.getGateway('OPENPAY');
+    const methodConfigs = this.methodConfigurations[method] || [];
+    const defaultConfig = methodConfigs.find(conf => conf.isDefault && conf.enabled);
+    
+    if (!defaultConfig) {
+      // Default to OPENPAY if no specific configuration exists
+      const provider = 'OPENPAY';
+      const gateway = await this.getGateway(provider);
+      
+      // Add default configuration
+      await this.configureGatewayMethod(method, {
+        gatewayId: this.getGatewayIdForProvider(provider),
+        enabled: true,
+        isDefault: true,
+        supportedCurrencies: ['COP']
+      });
+
+      return gateway;
     }
 
-    return this.getGateway(gatewayProvider);
+    return this.getGateway(this.getProviderForGatewayId(defaultConfig.gatewayId));
   }
 
   public async getGateway(provider: PaymentGateway): Promise<PaymentGatewayInterface> {
@@ -139,18 +243,39 @@ export class PaymentGatewayService {
     return gateway;
   }
 
-  public async updateMethodMapping(method: PaymentMethodType, gateway: PaymentGateway): Promise<void> {
+  public async updateMethodMapping(method: PaymentMethodType, provider: PaymentGateway): Promise<void> {
     // Verify gateway exists and is active
-    const gatewayInstance = await this.getGateway(gateway);
-    if (!gatewayInstance) {
-      throw new Error(`Gateway ${gateway} is not active or does not exist`);
+    const gateway = await this.getGateway(provider);
+    if (!gateway) {
+      throw new Error(`Gateway ${provider} is not active or does not exist`);
     }
 
-    this.methodMappings.set(method, gateway);
+    const gatewayId = this.getGatewayIdForProvider(provider);
+
+    // Update configurations
+    await this.configureGatewayMethod(method, {
+      gatewayId,
+      enabled: true,
+      isDefault: true,
+      supportedCurrencies: ['COP']
+    });
   }
 
   public getMethodMappings(): Map<PaymentMethodType, PaymentGateway> {
-    return new Map(this.methodMappings);
+    // Convert methodConfigurations to the old mapping format for backwards compatibility
+    const mappings = new Map<PaymentMethodType, PaymentGateway>();
+    
+    Object.entries(this.methodConfigurations).forEach(([method, configs]) => {
+      const defaultConfig = configs.find(conf => conf.isDefault && conf.enabled);
+      if (defaultConfig) {
+        mappings.set(
+          method as PaymentMethodType,
+          this.getProviderForGatewayId(defaultConfig.gatewayId)
+        );
+      }
+    });
+
+    return mappings;
   }
 
   public async refreshGateway(provider: PaymentGateway): Promise<void> {
@@ -175,4 +300,29 @@ export class PaymentGatewayService {
 
     return gateways;
   }
+  
+  private getProviderForGatewayId(gatewayId: number): PaymentGateway {
+    // Implement your mapping logic here
+    switch (gatewayId) {
+      case 1:
+        return 'GOU';
+      case 2:
+        return 'OPENPAY';
+      default:
+        throw new Error(`Unknown gateway ID: ${gatewayId}`);
+    }
+  }
+
+  private getGatewayIdForProvider(provider: PaymentGateway): number {
+    // Implement reverse mapping logic here
+    switch (provider) {
+      case 'GOU':
+        return 1;
+      case 'OPENPAY':
+        return 2;
+      default:
+        throw new Error(`Unknown provider: ${provider}`);
+    }
+  }
+
 }

@@ -155,10 +155,12 @@ export class Order extends Model<OrderAttributes, OrderCreationAttributes> {
         created_at: {
           type: DataTypes.DATE,
           allowNull: false,
+          defaultValue: DataTypes.NOW
         },
         updated_at: {
-          type: DataTypes.DATE,
+          type: DataTypes.DATE, 
           allowNull: false,
+          defaultValue: DataTypes.NOW
         }
       },
       {

@@ -20,8 +20,6 @@ interface OrderPriceHistoryAttributes {
   final_amount: number;
   is_free: boolean;
   notes: string | null;
-  created_at: Date;
-  updated_at: Date;
 }
 
 interface OrderPriceHistoryCreationAttributes extends Omit<OrderPriceHistoryAttributes, 'id' | 'created_at' | 'updated_at'> {}
@@ -39,8 +37,8 @@ export class OrderPriceHistory extends Model<OrderPriceHistoryAttributes, OrderP
   declare final_amount: number;
   declare is_free: boolean;
   declare notes: string | null;
-  declare created_at: Date;
-  declare updated_at: Date;
+  declare readonly created_at: Date;
+  declare readonly updated_at: Date;
 
   // Associations
   declare readonly order?: Order;
@@ -113,9 +111,7 @@ export class OrderPriceHistory extends Model<OrderPriceHistoryAttributes, OrderP
       notes: {
         type: DataTypes.TEXT,
         allowNull: true,
-      },
-      created_at: DataTypes.DATE,
-      updated_at: DataTypes.DATE,
+      }
     }, {
       sequelize,
       tableName: 'orders_price_histories',

@@ -14,15 +14,6 @@ const router = Router();
 // Create an API router for all API routes
 const apiRouter = Router();
 
-apiRouter.use((err: any, req: Request, res: Response, next: NextFunction) => {
-    console.error('API Error:', err);
-    res.status(500).json({
-      status: 'error',
-      message: err instanceof Error ? err.message : 'Internal server error',
-      debug: process.env.NODE_ENV === 'development' ? err.stack : undefined
-    });
-  });
-
 // Add all routers to main router
 router.use('/redis', redisRoutes);
 router.use('/api', apiRouter);
@@ -34,6 +25,29 @@ apiRouter.use('/', cartRoutes);
 apiRouter.use('/payments', paymentConfigRoutes);
 apiRouter.use('/payments', paymentTestRoutes);
 apiRouter.use('/checkout', checkoutRoutes);
+
+// Global error handler - this should be the last middleware
+apiRouter.use((err: any, req: Request, res: Response, next: NextFunction) => {
+  // If headers have already been sent, let Express handle it
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  // Log error for debugging
+  console.error('API Error:', {
+    error: err,
+    stack: err.stack
+  });
+
+  // Send error response
+  return res.status(500).json({
+    status: 'error',
+    message: err instanceof Error ? err.message : 'Internal server error',
+    ...(process.env.NODE_ENV === 'development' && {
+      stack: err.stack
+    })
+  });
+});
 
 export { connectRedis };
 export default router;

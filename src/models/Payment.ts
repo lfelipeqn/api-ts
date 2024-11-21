@@ -1,38 +1,11 @@
 // models/Payment.ts
 
 import { Model, DataTypes, Sequelize, Association, Transaction } from 'sequelize';
-import { PAYMENT_STATES, PaymentState, PaymentGateway, PAYMENT_GATEWAYS } from '../types/payment';
+import { PaymentAttributes, PAYMENT_STATES, PaymentState, PaymentCreationAttributes, PaymentGateway, PAYMENT_GATEWAYS } from '../types/payment';
+
 import { PaymentMethodConfig } from './PaymentMethodConfig';
 import { Order } from './Order';
 import { User } from './User';
-
-interface PaymentAttributes {
-  id: number;
-  order_id: number;
-  payment_method_id: number;
-  transaction_id: string;
-  reference: string;
-  amount: number;
-  currency: string;
-  state: PaymentState;
-  state_description: string;
-  gateway_response: string | null;
-  error_message: string | null;
-  url: string | null;
-  gateway: PaymentGateway;
-  attempts: number;
-  last_attempt_at: Date | null;
-  external_reference: string | null;
-  metadata: string | null;
-  user_id: number | null;
-  created_at: Date;
-  updated_at: Date;
-}
-
-interface PaymentCreationAttributes extends Omit<PaymentAttributes, 'id' | 'created_at' | 'updated_at'> {
-  created_at?: Date;
-  updated_at?: Date;
-}
 
 export class Payment extends Model<PaymentAttributes, PaymentCreationAttributes> {
   declare id: number;
@@ -237,21 +210,15 @@ export class Payment extends Model<PaymentAttributes, PaymentCreationAttributes>
   async updateState(
     state: PaymentState,
     description: string,
-    gatewayResponse?: Record<string, any>,
-    transaction?: Transaction
+    gatewayResponse?: Record<string, any>
   ): Promise<void> {
-    const updateData: Partial<PaymentAttributes> = {
+    await this.update({
       state,
       state_description: description,
+      gateway_response: gatewayResponse ? JSON.stringify(gatewayResponse) : null,
       last_attempt_at: new Date(),
       attempts: this.attempts + 1
-    };
-
-    if (gatewayResponse) {
-      updateData.gateway_response = JSON.stringify(gatewayResponse);
-    }
-
-    await this.update(updateData, { transaction });
+    });
   }
 
   static async findByOrder(orderId: number): Promise<Payment[]> {

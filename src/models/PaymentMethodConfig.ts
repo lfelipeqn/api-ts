@@ -1,9 +1,12 @@
-import { Model, DataTypes, Sequelize, Association, BelongsToGetAssociationMixin } from 'sequelize';
+import { Model, DataTypes, Sequelize, Association, BelongsToGetAssociationMixin, ModelStatic, InferAttributes, 
+  InferCreationAttributes,
+  CreationOptional,
+  NonAttribute } from 'sequelize';
 import { 
   PAYMENT_METHOD_TYPES, 
   PAYMENT_GATEWAYS, 
   PaymentMethodType, 
-  PaymentGateway 
+  PaymentGateway,
 } from '../types/payment';
 import { GatewayConfig } from '../models/GatewayConfig';
 
@@ -24,7 +27,10 @@ interface PaymentMethodConfigAttributes {
   interface PaymentMethodConfigCreationAttributes extends Omit<PaymentMethodConfigAttributes, 'id' | 'created_at' | 'updated_at'> {}
   
 
-  export class PaymentMethodConfig extends Model<PaymentMethodConfigAttributes, PaymentMethodConfigCreationAttributes> {
+  export class PaymentMethodConfig extends Model<
+  InferAttributes<PaymentMethodConfig>,
+  InferCreationAttributes<PaymentMethodConfig>
+> {
     declare id: number;
     declare type: PaymentMethodType;
     declare name: string;
@@ -34,10 +40,10 @@ interface PaymentMethodConfigAttributes {
     declare max_amount: number | null;
     declare payment_gateway: PaymentGateway;
     declare gateway_config_id: number;
-    declare created_at: Date;
-    declare updated_at: Date;
+    declare created_at: CreationOptional<Date>;
+    declare updated_at: CreationOptional<Date>;
 
-    declare readonly gatewayConfig?: GatewayConfig;
+    declare gatewayConfig?: NonAttribute<GatewayConfig>;
     declare getGatewayConfig: BelongsToGetAssociationMixin<GatewayConfig>;
 
      // Declare associations
@@ -85,8 +91,14 @@ interface PaymentMethodConfigAttributes {
           type: DataTypes.INTEGER.UNSIGNED,
           allowNull: false,
         },
-        created_at: DataTypes.DATE,
-        updated_at: DataTypes.DATE,
+        created_at: {
+          type: DataTypes.DATE,
+          allowNull: false,
+        },
+        updated_at: {
+          type: DataTypes.DATE,
+          allowNull: false,
+        }
       }, {
         sequelize,
         tableName: 'payment_method_configs',

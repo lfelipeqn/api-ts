@@ -1,7 +1,8 @@
 // services/CheckoutService.ts
 
-import { Op,
-  Transaction, WhereOptions } from 'sequelize';
+import { Op, Transaction, WhereOptions, Optional, FindOptions, ModelStatic, 
+  InferAttributes,
+  NonNullFindOptions} from 'sequelize';
 import { Cart } from '../models/Cart';
 import { Order } from '../models/Order';
 import { Payment } from '../models/Payment';
@@ -9,6 +10,7 @@ import { Address } from '../models/Address';
 import { Agency } from '../models/Agency';
 import { PaymentMethodConfig } from '../models/PaymentMethodConfig';
 import { PaymentGatewayService } from './PaymentGatewayService';
+import { GatewayConfig } from '../models/GatewayConfig';
 import { CheckoutSession, OrderState, DeliveryType } from '../types/checkout';
 import { Cache } from './Cache';
 import { randomBytes } from 'crypto';
@@ -17,17 +19,19 @@ import { Product } from '../models/Product';
 import { PriceHistory } from '../models/PriceHistory';
 import { OrderPriceHistory } from '../models/OrderPriceHistory';
 import { OrderAttributes, OrderCreationAttributes } from '../types/order';
-import { CartAttributes } from '../types/cart';
-import { PaymentState,
+import { CartAttributes, CartSummary } from '../types/cart';
+import { CartSessionManager } from './CartSessionManager';
+
+import { 
+  PaymentState,
   PaymentResponse,
   PSEPaymentRequest,
   CreditCardPaymentRequest,
   ProcessedPaymentResponse,
   PaymentMethodType,
   PaymentGateway,
-  PaymentCustomer,
-  PSECustomer
- } from '../types/payment';
+} from '../types/payment';
+
 
  interface BasePaymentRequestData {
   customer: {
@@ -62,17 +66,46 @@ interface PSEPaymentRequestData extends BasePaymentRequestData {
 
 type PaymentRequestData = CardPaymentRequestData | PSEPaymentRequestData;
 
+export interface PaymentMethodConfigAttributes {
+  id: number;
+  type: PaymentMethodType;
+  name: string;
+  description: string | null;
+  enabled: boolean;
+  min_amount: number | null;
+  max_amount: number | null;
+  payment_gateway: PaymentGateway;
+  gateway_config_id: number;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface PaymentMethodConfigCreationAttributes
+  extends Optional<PaymentMethodConfigAttributes, 'id' | 'created_at' | 'updated_at'> {}
+
+export interface GatewayConfigAttributes {
+  id: number;
+  gateway: PaymentGateway;
+  name: string;
+  config: string;
+  is_active: boolean;
+  test_mode: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+
 
 export class CheckoutService {
   private static instance: CheckoutService;
   private readonly cache: Cache;
   private readonly SESSION_PREFIX = 'checkout_session:';
   private readonly SESSION_DURATION = 30 * 60; // 30 minutes
+  private readonly gatewayService: PaymentGatewayService;
 
   private constructor() {
     this.cache = Cache.getInstance();
+    this.gatewayService = PaymentGatewayService.getInstance();
   }
-
   public static getInstance(): CheckoutService {
     if (!CheckoutService.instance) {
       CheckoutService.instance = new CheckoutService();
@@ -90,15 +123,11 @@ export class CheckoutService {
   }
 
   public async createSession(cartId: number, userId: number): Promise<CheckoutSession> {
-    if (!userId) {
-      throw new Error('User ID is required for checkout');
-    }
-  
     const sessionId = await this.generateSessionId();
     const session: CheckoutSession = {
       id: sessionId,
       cart_id: cartId,
-      user_id: userId, // Always set user_id
+      user_id: userId,
       delivery_type: null,
       delivery_address_id: null,
       pickup_agency_id: null,
@@ -106,16 +135,15 @@ export class CheckoutService {
       created_at: new Date(),
       expires_at: new Date(Date.now() + this.SESSION_DURATION * 1000)
     };
-  
+
     await this.cache.set(
       `${this.SESSION_PREFIX}${sessionId}`,
       session,
       this.SESSION_DURATION
     );
-  
+
     return session;
   }
-  
 
   public async getSession(sessionId: string): Promise<CheckoutSession | null> {
     return this.cache.get<CheckoutSession>(`${this.SESSION_PREFIX}${sessionId}`);
@@ -167,42 +195,78 @@ export class CheckoutService {
   public async validatePaymentMethod(
     sessionId: string,
     paymentMethodId: number
-  ): Promise<boolean> {
-    const session = await this.getSession(sessionId);
-    if (!session) return false;
-
-    const cart = await Cart.findByPk(session.cart_id);
-    if (!cart) return false;
-
-    const paymentMethod = await PaymentMethodConfig.findByPk(paymentMethodId);
-    if (!paymentMethod || !paymentMethod.enabled) return false;
-
-    const cartSummary = await cart.getSummary();
-    
-    // Validate amount limits if configured
-    if (paymentMethod.min_amount && cartSummary.total < paymentMethod.min_amount) {
-      return false;
+  ): Promise<{ valid: boolean; error?: string }> {
+    try {
+      const session = await this.getSession(sessionId);
+      if (!session) {
+        return { valid: false, error: 'Invalid checkout session' };
+      }
+  
+      // Get cart to validate amounts
+      const cart = await Cart.findByPk(session.cart_id);
+      if (!cart) {
+        return { valid: false, error: 'Cart not found' };
+      }
+  
+      // Get payment method with gateway config
+      const paymentMethod = await PaymentMethodConfig.findOne({
+        where: { 
+          id: paymentMethodId,
+          enabled: true
+        },
+        include: [{
+          model: GatewayConfig,
+          as: 'gatewayConfig',
+          where: { is_active: true }
+        }]
+      });
+  
+      if (!paymentMethod) {
+        return { valid: false, error: 'Payment method not found or inactive' };
+      }
+  
+      if (!paymentMethod.gatewayConfig) {
+        return { valid: false, error: 'Payment gateway configuration not found' };
+      }
+  
+      // Validate cart amount against payment method limits
+      const cartSummary = await cart.getSummary();
+      
+      if (paymentMethod.min_amount && cartSummary.total < paymentMethod.min_amount) {
+        return { 
+          valid: false, 
+          error: `Order amount below minimum (${paymentMethod.min_amount})`
+        };
+      }
+      
+      if (paymentMethod.max_amount && cartSummary.total > paymentMethod.max_amount) {
+        return { 
+          valid: false, 
+          error: `Order amount above maximum (${paymentMethod.max_amount})`
+        };
+      }
+  
+      return { valid: true };
+        
+    } catch (error) {
+      console.error('Payment method validation error:', error);
+      return { 
+        valid: false, 
+        error: error instanceof Error ? error.message : 'Payment method validation failed'
+      };
     }
-    if (paymentMethod.max_amount && cartSummary.total > paymentMethod.max_amount) {
-      return false;
-    }
-
-    return true;
   }
 
-  public async createOrder(
-    sessionId: string,
-    transaction?: Transaction
-  ): Promise<Order | null> {
+  public async createOrder(sessionId: string): Promise<Order> {
     const session = await this.getSession(sessionId);
     if (!session || !session.user_id) {
       throw new Error('Invalid session or missing user ID');
     }
   
-    const t = transaction || await (await import('../config/database')).getSequelize().transaction();
+    const sequelize = await (await import('../config/database')).getSequelize();
+    const transaction = await sequelize.transaction();
   
     try {
-      // Find cart with details
       const cart = await Cart.findOne({
         where: {
           id: session.cart_id,
@@ -212,7 +276,8 @@ export class CheckoutService {
         include: [{
           model: CartDetail,
           as: 'details'
-        }]
+        }],
+        transaction
       });
   
       if (!cart) {
@@ -220,9 +285,6 @@ export class CheckoutService {
       }
   
       const cartSummary = await cart.getSummary();
-      const now = new Date();
-  
-      // Create order with properly typed data
       const order = await Order.create({
         user_id: session.user_id,
         cart_id: session.cart_id,
@@ -237,39 +299,86 @@ export class CheckoutService {
         tax_amount: 0,
         currency: 'COP',
         payment_method_id: session.payment_method_id!,
-        created_at: now,
-        updated_at: now
-      }, { transaction: t });
+      }, { transaction });
   
-      // Create order details
-      for (const item of cartSummary.items) {
-        await OrderPriceHistory.create({
-          order_id: order.id,
-          product_id: item.product_id,
-          price_history_id: cart.details![0].price_history_id,
-          promotion_id: item.applied_promotion?.id || null,
-          quantity: item.quantity,
-          unit_price: Number(item.price),
-          subtotal: Number(item.subtotal),
-          discount_amount: Number(item.discount),
-          final_amount: Number(item.final_price),
-          is_free: false
-        }, { transaction: t });
-      }
+      // Create order history
+      await OrderPriceHistory.create({
+        order_id: order.id,
+        product_id: cart.details![0].product_id,
+        price_history_id: cart.details![0].price_history_id,
+        promotion_id: cartSummary.items[0].applied_promotion?.id || null,
+        quantity: cart.details![0].quantity,
+        unit_price: Number(cartSummary.items[0].price),
+        subtotal: Number(cartSummary.items[0].subtotal),
+        discount_amount: Number(cartSummary.items[0].discount),
+        final_amount: Number(cartSummary.items[0].final_price),
+        is_free: false,
+      }, { transaction });
   
       // Update cart status
-      await cart.update({ status: 'ordered' }, { transaction: t });
+      await cart.update({ status: 'ordered' }, { transaction });
   
-      // Clear checkout session
-      await this.cache.del(`${this.SESSION_PREFIX}${sessionId}`);
+      await transaction.commit();
   
-      await t.commit();
+      // Clean up sessions after successful commit
+      const cartSessionManager = CartSessionManager.getInstance();
+      await Promise.all([
+        this.cache.del(`${this.SESSION_PREFIX}${sessionId}`),
+        cartSessionManager.deleteSession(cart.session_id)
+      ]);
+  
       return order;
-  
     } catch (error) {
-      await t.rollback();
-      console.error('Error creating order:', error);
+      await transaction.rollback();
       throw error;
+    }
+  }
+  
+  private async validateCartStock(cart: Cart, transaction?: Transaction): Promise<{
+    valid: boolean;
+    invalidItems: Array<{
+      product_id: number;
+      requested: number;
+      available: number;
+    }>;
+  }> {
+    const invalidItems = [];
+    
+    for (const detail of cart.details || []) {
+      const stockValidation = await detail.validateStock();
+      if (!stockValidation.valid) {
+        invalidItems.push(stockValidation.data);
+      }
+    }
+  
+    return {
+      valid: invalidItems.length === 0,
+      invalidItems
+    };
+  }
+  
+  private async createOrderDetails(
+    order: Order,
+    cart: Cart,
+    cartSummary: CartSummary,
+    transaction: Transaction
+  ): Promise<void> {
+    for (const item of cartSummary.items) {
+      await OrderPriceHistory.create({
+        order_id: order.id,
+        product_id: item.product_id,
+        price_history_id: cart.details![0].price_history_id,
+        promotion_id: item.applied_promotion?.id || null,
+        quantity: item.quantity,
+        unit_price: Number(item.price),
+        subtotal: Number(item.subtotal),
+        discount_amount: Number(item.discount),
+        final_amount: Number(item.final_price),
+        is_free: false,
+        notes: item.applied_promotion ? 
+          `Promotion applied: ${item.applied_promotion.type} - ${item.applied_promotion.discount}%` : 
+          null
+      }, { transaction });
     }
   }
   
@@ -292,6 +401,10 @@ export class CheckoutService {
       description: `Order #${order.id} payment`,
       tokenId: paymentData.tokenId,
       deviceSessionId: paymentData.deviceSessionId,
+      metadata: {
+        orderId: orderReference,
+        iva: "19" // Colombia specific
+      },
       customer: {
         name: paymentData.customer.name,
         last_name: paymentData.customer.last_name,
@@ -312,6 +425,10 @@ export class CheckoutService {
       currency: order.currency,
       description: `Order #${order.id} payment`,
       redirectUrl: paymentData.redirectUrl,
+      metadata: {
+        orderId: orderReference,
+        iva: "1900" // Colombian tax for PSE
+      },
       customer: {
         name: paymentData.customer.name,
         last_name: paymentData.customer.last_name,
@@ -323,10 +440,6 @@ export class CheckoutService {
           city: '',
           additional: ''
         }
-      },
-      metadata: {
-        order_id: orderReference,
-        iva: "1900" // Colombian tax for PSE
       }
     };
   }
@@ -354,6 +467,12 @@ export class CheckoutService {
       const gatewayService = PaymentGatewayService.getInstance();
       const gateway = await gatewayService.getGatewayForMethod(order.paymentMethod.type);
       const orderReference = this.createOrderReference(order.id);
+      
+      // Get gateway info and validate provider
+      const gatewayInfo = gateway.getGatewayInfo();
+      if (!gatewayInfo.provider) {
+        throw new Error('Gateway provider not configured');
+      }
 
       // Create initial payment record
       const payment = await Payment.create({
@@ -365,7 +484,7 @@ export class CheckoutService {
         currency: order.currency,
         state: 'PENDING',
         state_description: 'Payment initiated',
-        gateway: gateway.getGatewayInfo().provider as PaymentGateway,
+        gateway: gatewayInfo.provider, // This is now type-safe
         attempts: 1,
         last_attempt_at: new Date(),
         user_id: order.user_id
@@ -375,20 +494,14 @@ export class CheckoutService {
         let response: PaymentResponse;
 
         if (order.paymentMethod.type === 'CREDIT_CARD' && 'tokenId' in paymentData) {
-          const cardRequest = this.createCardPaymentRequest(
-            order,
-            paymentData,
-            orderReference
+          response = await gateway.processCreditCardPayment(
+            this.createCardPaymentRequest(order, paymentData, orderReference)
           );
-          response = await gateway.processCreditCardPayment(cardRequest);
         } 
         else if (order.paymentMethod.type === 'PSE' && 'redirectUrl' in paymentData) {
-          const pseRequest = this.createPSEPaymentRequest(
-            order,
-            paymentData,
-            orderReference
+          response = await gateway.processPSEPayment(
+            this.createPSEPaymentRequest(order, paymentData, orderReference)
           );
-          response = await gateway.processPSEPayment(pseRequest);
         } 
         else {
           throw new Error('Invalid payment method or request data');
@@ -405,13 +518,7 @@ export class CheckoutService {
           url: response.redirectUrl,
           metadata: JSON.stringify({
             payment_method: response.paymentMethod,
-            card_info: response.metadata?.card,
-            customer_info: response.metadata?.customer,
-            gateway_info: {
-              transaction_date: response.metadata?.operation_date,
-              authorization: response.metadata?.authorization,
-              gateway_reference: response.gatewayReference
-            }
+            ...response.metadata
           })
         });
 
@@ -427,7 +534,6 @@ export class CheckoutService {
           ...response,
           paymentDetails
         };
-
       } catch (error) {
         await payment.updateState(
           'FAILED',
@@ -526,7 +632,7 @@ export class CheckoutService {
         throw new Error('Order not found');
       }
   
-      // Create payment record
+      // Create payment record with user_id
       const payment = await Payment.create({
         order_id: orderId,
         payment_method_id: order.payment_method_id,
@@ -545,6 +651,7 @@ export class CheckoutService {
           card_info: paymentResponse.metadata?.card,
           customer_info: paymentResponse.metadata?.customer
         }),
+        user_id: order.user_id, // Add the user_id from order
         created_at: new Date(),
         updated_at: new Date()
       }, { transaction: t });
@@ -568,7 +675,7 @@ export class CheckoutService {
     const t = await (await import('../config/database')).getSequelize().transaction();
   
     try {
-      // Create failed payment record
+      // Create failed payment record with user_id
       await Payment.create({
         order_id: order.id,
         payment_method_id: order.payment_method_id,
@@ -582,6 +689,7 @@ export class CheckoutService {
         gateway: 'OPENPAY', // Or get from payment method config
         attempts: 1,
         last_attempt_at: new Date(),
+        user_id: order.user_id, // Add the user_id from order
         created_at: new Date(),
         updated_at: new Date()
       }, { transaction: t });
@@ -597,4 +705,51 @@ export class CheckoutService {
       console.error('Error handling payment failure:', err);
     }
   }
+
+  private async validatePaymentGateway(
+    methodType: PaymentMethodType,
+    gatewayConfig?: GatewayConfig
+  ): Promise<{ valid: boolean; error?: string }> {
+    try {
+      // Get gateway for method type
+      const gateway = await this.gatewayService.getGatewayForMethod(methodType);
+      if (!gateway) {
+        return { 
+          valid: false, 
+          error: `No payment gateway configured for ${methodType}` 
+        };
+      }
+  
+      // If we have a specific gateway config, validate it
+      if (gatewayConfig) {
+        const configInfo = gateway.getGatewayInfo();
+        if (configInfo.provider !== gatewayConfig.gateway) {
+          return { 
+            valid: false, 
+            error: 'Gateway configuration mismatch' 
+          };
+        }
+      }
+  
+      // Test gateway connection
+      const testResult = await gateway.testConnection();
+      if (!testResult.connection) {
+        return { 
+          valid: false, 
+          error: testResult.error || 'Gateway connection test failed'
+        };
+      }
+  
+      return { valid: true };
+    } catch (error) {
+      console.error('Payment gateway validation error:', error);
+      return { 
+        valid: false, 
+        error: error instanceof Error ? error.message : 'Gateway validation failed'
+      };
+    }
+  }
+
+
+
 }

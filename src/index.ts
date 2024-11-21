@@ -1,9 +1,18 @@
 // src/index.ts
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import dotenv from 'dotenv';
-import routes, { connectRedis } from './routes';
+import routes from './routes/index';
+import { connectRedis } from './routes/redis-routes';
 import { getDatabase } from './config/database';
 import { initializeCache } from './config/redis';
+
+// Type for JSON parse error
+interface JsonParseError extends SyntaxError {
+  status?: number;
+  statusCode?: number;
+  body?: any;
+  type?: string;
+}
 
 // Load environment variables
 dotenv.config();
@@ -11,8 +20,8 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Body parsing middleware
-app.use((req, res, next) => {
+// Content-Type middleware
+app.use((req: Request, res: Response, next: NextFunction) => {
   const contentType = req.header('Content-Type');
   if (contentType?.includes('application/json')) {
     req.headers['content-type'] = 'application/json';
@@ -20,8 +29,32 @@ app.use((req, res, next) => {
   next();
 });
 
-// Add CORS headers if needed
-app.use((req, res, next) => {
+// Configure body parsers
+app.use(express.json({
+  limit: '10mb',
+  strict: true
+}));
+
+app.use(express.urlencoded({ 
+  extended: true,
+  limit: '10mb'
+}));
+
+// JSON error handling middleware
+app.use((err: Error | JsonParseError, req: Request, res: Response, next: NextFunction) => {
+  if (err instanceof SyntaxError && (err as JsonParseError).status === 400 && 'body' in err) {
+    console.error('JSON Parse Error:', err);
+    return res.status(400).json({
+      status: 'error',
+      message: 'Invalid JSON format',
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+  next(err);
+});
+
+// CORS headers
+app.use((req: Request, res: Response, next: NextFunction) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
@@ -31,82 +64,63 @@ app.use((req, res, next) => {
   next();
 });
 
-// Middleware
-// Parse JSON bodies with debug logging
-app.use(express.json({
-  limit: '10mb',
-  verify: (req: express.Request, res: express.Response, buf: Buffer) => {
-    try {
-      JSON.parse(buf.toString());
-    } catch (e) {
-      console.error('Invalid JSON:', e);
-      res.status(400).json({ 
-        status: 'error', 
-        message: 'Invalid JSON in request body' 
+// Request logging middleware
+if (process.env.NODE_ENV === 'development') {
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
+      console.log('Request debug info:', {
+        method: req.method,
+        path: req.path,
+        contentType: req.header('Content-Type'),
+        bodySize: req.body ? JSON.stringify(req.body).length : 0,
+        body: req.body
       });
     }
-  }
-}));
-
-app.use(express.urlencoded({ 
-  extended: true,
-  limit: '10mb'
-}));
-
-// Request logging middleware
-app.use((req, res, next) => {
-  if (req.method === 'POST' || req.method === 'PUT') {
-    console.log('Request debug info:', {
-      method: req.method,
-      path: req.path,
-      contentType: req.header('Content-Type'),
-      bodySize: JSON.stringify(req.body).length,
-      body: req.body
-    });
-  }
-  next();
-});
+    next();
+  });
+}
 
 // Use routes
 app.use('/', routes);
 
-app.get('/', (req, res) => {
-  res.json({ message: 'Batericars API is running!' });
-});
+// Interface for custom API errors
+interface ApiError extends Error {
+  status?: number;
+  statusCode?: number;
+  details?: any;
+}
 
-// Error handling middleware
-// Error handling middleware
-app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error('Error stack:', err.stack);
-  
-  // If headers have already been sent, delegate to default error handler
+// Global error handling middleware
+app.use((err: ApiError, req: Request, res: Response, next: NextFunction) => {
+  // Always log the error
+  console.error('Global error handler:', {
+    error: err,
+    stack: err.stack
+  });
+
+  // Don't send multiple responses
   if (res.headersSent) {
+    console.warn('Headers already sent, passing to default error handler');
     return next(err);
   }
 
-  // Handle JSON parsing errors
-  if (err instanceof SyntaxError && 'body' in err) {
-    return res.status(400).json({
-      status: 'error',
-      message: 'Invalid JSON in request body',
-      details: process.env.NODE_ENV === 'development' ? err.message : undefined
-    });
-  }
+  // Determine status code
+  const statusCode = err.status || err.statusCode || 500;
 
-  // Handle other errors
-  res.status(err.status || 500).json({
+  // Send error response
+  return res.status(statusCode).json({
     status: 'error',
-    message: process.env.NODE_ENV === 'development' ? err.message : 'Internal Server Error',
-    details: process.env.NODE_ENV === 'development' ? {
+    message: err.message || 'Internal server error',
+    ...(process.env.NODE_ENV === 'development' && {
       stack: err.stack,
-      ...err
-    } : undefined
+      details: err.details || err
+    })
   });
 });
 
 async function startServer() {
   try {
-    const { sequelize, models } = getDatabase();
+    const { sequelize } = getDatabase();
     await sequelize.authenticate();
     console.log('Database connection has been established successfully.');
 
@@ -124,7 +138,6 @@ async function startServer() {
   }
 }
 
-startServer();
 // Graceful shutdown
 process.on('SIGINT', async () => {
   try {
@@ -137,3 +150,7 @@ process.on('SIGINT', async () => {
     process.exit(1);
   }
 });
+
+startServer();
+
+export default app;

@@ -45,7 +45,10 @@ export class CartSessionManager {
   }
 
   public async getSession(sessionId: string): Promise<CartSession | null> {
-    return this.cache.get<CartSession>(this.getKey(sessionId));
+    console.log('Getting cart session:', sessionId);
+    const session = await this.cache.get<CartSession>(this.getKey(sessionId));
+    console.log('Cart session result:', session);
+    return session;
   }
 
   public async updateSession(
@@ -99,5 +102,17 @@ export class CartSessionManager {
 
   private getKey(sessionId: string): string {
     return `${this.prefix}${sessionId}`;
+  }
+
+  public async ensureSession(
+    cartId: number,
+    sessionId: string,
+    userId: number | null = null
+  ): Promise<void> {
+    const exists = await this.cache.exists(this.getKey(sessionId));
+    if (!exists) {
+      console.log('Recreating missing cart session:', { cartId, sessionId, userId });
+      await this.createSession(cartId, userId, sessionId);
+    }
   }
 }

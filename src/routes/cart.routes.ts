@@ -6,6 +6,7 @@ import { getModels, getSequelize } from '../config/database';
 import { Transaction } from 'sequelize';
 import { CartStatus } from '../types/cart';
 import { UserSessionManager } from '../services/UserSessionManager';
+import { CartDetail } from '../models/CartDetail';
 
 const router = Router();
 
@@ -90,13 +91,22 @@ const getOrCreateCart = async (req: CartRequest & AuthenticatedRequest, res: Res
     const userId = req.user?.id;
     let cart = null;
 
-    console.log('Cart middleware starting:', { userId, sessionId });
+    console.log('Cart middleware debug info:', { 
+      userId,
+      sessionId,
+      authHeader: req.headers.authorization,
+      isAuthenticated: !!req.user,
+      method: req.method,
+      path: req.path
+    });
 
     transaction = await sequelize.transaction();
 
     try {
-      // Priority 1: Get authenticated user's active cart
+      // Priority 1: Get authenticated user's active cart by userId
       if (userId) {
+        console.log('Looking for user cart with ID:', userId);
+        
         cart = await Cart.findOne({
           where: {
             user_id: userId,
@@ -108,10 +118,51 @@ const getOrCreateCart = async (req: CartRequest & AuthenticatedRequest, res: Res
           }],
           transaction
         });
+        
+        console.log('User cart lookup result:', {
+          found: !!cart,
+          cartId: cart?.id,
+          cartSessionId: cart?.session_id
+        });
+
+        // If authenticated user has no cart and it's a cart-modifying request, create one
+        if (!cart && req.method !== 'GET') {
+          // Generate session ID if needed
+          sessionId = sessionManager.generateSessionId();
+          console.log('Creating new cart for authenticated user:', { userId, sessionId });
+
+          cart = await Cart.create({
+            user_id: userId,
+            session_id: sessionId,
+            status: 'active' as CartStatus,
+            expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
+          }, { transaction });
+
+          await sessionManager.createSession(cart.id, userId, sessionId);
+          res.set('X-Cart-Session', sessionId);
+          
+          console.log('Created new cart for authenticated user:', { 
+            cartId: cart.id, 
+            sessionId: cart.session_id 
+          });
+        }
+
+        if (cart) {
+          sessionId = cart.session_id;
+          res.set('X-Cart-Session', sessionId);
+          
+          // Ensure Redis session exists
+          const redisSession = await sessionManager.getSession(sessionId);
+          if (!redisSession) {
+            await sessionManager.createSession(cart.id, userId, sessionId);
+          }
+        }
       }
 
       // Priority 2: Get active cart by session if no user cart found
       if (!cart && sessionId) {
+        console.log('Looking for cart by session ID:', sessionId);
+        
         cart = await Cart.findOne({
           where: {
             session_id: sessionId,
@@ -123,16 +174,15 @@ const getOrCreateCart = async (req: CartRequest & AuthenticatedRequest, res: Res
           }],
           transaction
         });
+        
+        console.log('Session cart lookup result:', {
+          found: !!cart,
+          cartId: cart?.id
+        });
       }
 
-      // Create new cart in these cases:
-      // 1. No cart exists and it's not a GET request
-      // 2. Existing cart is abandoned/inactive and it's a POST request to add items
-      const shouldCreateNewCart = 
-        (!cart && req.method !== 'GET') || 
-        (cart?.status === 'abandoned' && req.path.includes('/cart/items') && req.method === 'POST');
-
-      if (shouldCreateNewCart) {
+      // For guest users or when no cart exists
+      if (!cart && req.method !== 'GET') {
         // Generate new session ID if needed
         if (!sessionId) {
           sessionId = sessionManager.generateSessionId();
@@ -172,42 +222,115 @@ const getOrCreateCart = async (req: CartRequest & AuthenticatedRequest, res: Res
 
       next();
     } catch (error) {
+      console.error('Error in cart middleware transaction:', error);
       await transaction.rollback();
       throw error;
     }
   } catch (error) {
-    if (transaction) await transaction.rollback();
+    if (transaction) {
+      try {
+        await transaction.rollback();
+      } catch (rollbackError) {
+        console.error('Error rolling back transaction:', rollbackError);
+      }
+    }
     console.error('Error in getOrCreateCart middleware:', error);
-    next(error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to create cart',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    });
   }
 };
 
 // Update the GET cart route to always include session_id
 router.get('/cart', 
-  async (req: CartRequest, res: Response, next: NextFunction) => {
-    // If there's an auth token, validate it but don't require it
-    if (req.headers.authorization) {
-      return authMiddleware(req, res, next);
+  async (req: CartRequest & AuthenticatedRequest, res: Response, next: NextFunction) => {
+    // Changed this to properly handle auth token
+    const authHeader = req.headers.authorization;
+    console.log('Auth header:', authHeader);
+
+    if (authHeader) {
+      try {
+        await authMiddleware(req as AuthenticatedRequest, res, next);
+      } catch (error) {
+        console.error('Auth middleware error:', error);
+        return res.status(401).json({
+          status: 'error',
+          message: 'Authentication failed'
+        });
+      }
+    } else {
+      next();
     }
+  },
+  async (req: CartRequest & AuthenticatedRequest, res: Response, next: NextFunction) => {
+    // Log auth state after middleware
+    console.log('After auth middleware:', {
+      isAuthenticated: !!req.user,
+      userId: req.user?.id,
+      authHeader: req.headers.authorization
+    });
     next();
   },
   getOrCreateCart,
-  async (req: CartRequest, res: Response) => {
+  async (req: CartRequest & AuthenticatedRequest, res: Response) => {
     try {
+      console.log('GET cart handler - Auth state:', {
+        isAuthenticated: !!req.user,
+        userId: req.user?.id,
+        cartExists: !!req.cart,
+        cartId: req.cart?.id,
+        cartUserId: req.cart?.user_id,
+        cartSessionId: req.cart?.session_id
+      });
+
       if (!req.cart) {
-        return res.json({
-          status: 'success',
-          data: {
-            session_id: req.headers['x-cart-session'] as string || '',
-            total: 0,
-            subtotal: 0,
-            totalDiscount: 0,
-            items: []
+        if (req.user) {
+          // If authenticated but no cart found, look up cart directly
+          const { Cart, CartDetail } = getModels();
+          const userCart = await Cart.findOne({
+            where: {
+              user_id: req.user.id,
+              status: 'active'
+            },
+            include: [{
+              model: CartDetail,
+              as: 'details'
+            }]
+          });
+
+          if (userCart) {
+            console.log('Found user cart on second lookup:', userCart.id);
+            req.cart = userCart;
           }
-        });
+        }
+
+        // If still no cart, return empty response
+        if (!req.cart) {
+          return res.json({
+            status: 'success',
+            data: {
+              session_id: req.headers['x-cart-session'] as string || '',
+              total: 0,
+              subtotal: 0,
+              totalDiscount: 0,
+              items: []
+            }
+          });
+        }
       }
 
+      // Ensure cart session exists in Redis
+      const sessionManager = CartSessionManager.getInstance();
+      await sessionManager.ensureSession(
+        req.cart.id,
+        req.cart.session_id,
+        req.cart.user_id
+      );
+
       const summary = await req.cart.getSummary();
+      console.log('Cart summary:', summary);
       
       res.json({
         status: 'success',
@@ -224,7 +347,6 @@ router.get('/cart',
       });
     }
 });
-
 
 // Add item to cart
 router.post('/cart/items',
@@ -539,51 +661,97 @@ router.post('/cart/merge',
 
       transaction = await sequelize.transaction();
 
-      // Find guest cart
-      const guestCart = await Cart.findOne({
-        where: {
-          session_id: guestSessionId,
-          status: 'active' as CartStatus
-        },
-        include: ['details'],
-        transaction
-      });
+      // Find both guest and user carts
+      const [guestCart, userCart] = await Promise.all([
+        Cart.findOne({
+          where: {
+            session_id: guestSessionId,
+            status: 'active' as CartStatus
+          },
+          include: ['details'],
+          transaction
+        }),
+        Cart.findOne({
+          where: {
+            user_id: userId,
+            status: 'active' as CartStatus
+          },
+          include: ['details'],
+          transaction
+        })
+      ]);
 
       if (!guestCart) {
-        await transaction.rollback();
+        await transaction.commit();
         return res.status(404).json({
           status: 'error',
           message: 'Guest cart not found'
         });
       }
 
-      // Simply update the guest cart with user information
-      await guestCart.update({
-        user_id: userId,
-        expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
-      }, { transaction });
+      let finalCart;
 
-      // Update session in Redis
-      await sessionManager.updateSession(guestSessionId, {
-        cart_id: guestCart.id,
-        user_id: userId,
-        expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
-      });
+      if (userCart) {
+        // Merge guest cart items into user cart
+        if (guestCart.details?.length) {
+          for (const detail of guestCart.details) {
+            await CartDetail.addToCart(
+              userCart.id,
+              detail.product_id,
+              detail.quantity,
+              transaction
+            );
+          }
+        }
+
+        // Mark guest cart as abandoned
+        await guestCart.update({
+          status: 'abandoned' as CartStatus
+        }, { transaction });
+
+        // Delete guest cart session
+        await sessionManager.deleteSession(guestSessionId);
+
+        finalCart = userCart;
+      } else {
+        // Simply update the guest cart with user information
+        await guestCart.update({
+          user_id: userId,
+          expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
+        }, { transaction });
+
+        // Update session in Redis
+        await sessionManager.updateSession(guestSessionId, {
+          cart_id: guestCart.id,
+          user_id: userId,
+          expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
+        });
+
+        finalCart = guestCart;
+      }
 
       await transaction.commit();
 
-      const summary = await guestCart.getSummary();
+      const summary = await finalCart.getSummary();
 
       return res.json({
         status: 'success',
         data: {
-          session_id: guestCart.session_id,
+          session_id: finalCart.session_id,
           ...summary
         }
       });
+
     } catch (error) {
-      if (transaction) await transaction.rollback();
       console.error('Error merging carts:', error);
+      try {
+        if (transaction) {
+          await transaction.rollback();
+        }
+      } catch (rollbackError) {
+        console.error('Error rolling back transaction:', rollbackError);
+      }
+      
       res.status(500).json({
         status: 'error',
         message: 'Failed to merge carts'
