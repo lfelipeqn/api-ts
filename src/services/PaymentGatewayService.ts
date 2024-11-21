@@ -4,10 +4,12 @@ import { GatewayConfig as GatewayConfigModel } from '../models/GatewayConfig';
 import { 
   PaymentGateway, 
   PaymentMethodType, 
-  PaymentGatewayInterface,
   GatewayConfigData,
   PaymentMethodSettings,
-  PaymentMethodMapping
+  PaymentMethodMapping,
+  BasePaymentGatewayInterface,
+  TokenizationCapableGateway,
+  supportsTokenization
 } from '../types/payment';
 
 interface ConfigData extends GatewayConfigData {
@@ -32,7 +34,7 @@ export interface GatewayMethodMapping {
 
 export class PaymentGatewayService {
   private static instance: PaymentGatewayService;
-  private readonly gateways = new Map<PaymentGateway, PaymentGatewayInterface>();
+  private readonly gateways = new Map<PaymentGateway, BasePaymentGatewayInterface>();
   private methodConfigurations: Record<PaymentMethodType, GatewayMethodConfig[]>;
 
   private constructor() {
@@ -120,7 +122,7 @@ export class PaymentGatewayService {
     method: PaymentMethodType,
     amount?: number,
     currency?: string
-  ): Promise<PaymentGatewayInterface> {
+  ): Promise<BasePaymentGatewayInterface> {
     const methodConfigs = this.methodConfigurations[method] || [];
     const defaultConfig = methodConfigs.find(conf => 
       conf.isDefault && 
@@ -162,7 +164,7 @@ export class PaymentGatewayService {
     const provider = config.provider;
     const gatewayId = this.getGatewayIdForProvider(provider);
 
-    let gateway: PaymentGatewayInterface;
+    let gateway: BasePaymentGatewayInterface;
 
     switch (provider) {
       case 'GOU':
@@ -201,7 +203,7 @@ export class PaymentGatewayService {
     }
   }
 
-  public async getGatewayForMethod(method: PaymentMethodType): Promise<PaymentGatewayInterface> {
+  public async getGatewayForMethod(method: PaymentMethodType): Promise<BasePaymentGatewayInterface> {
     const methodConfigs = this.methodConfigurations[method] || [];
     const defaultConfig = methodConfigs.find(conf => conf.isDefault && conf.enabled);
     
@@ -224,7 +226,7 @@ export class PaymentGatewayService {
     return this.getGateway(this.getProviderForGatewayId(defaultConfig.gatewayId));
   }
 
-  public async getGateway(provider: PaymentGateway): Promise<PaymentGatewayInterface> {
+  async getGateway(provider: PaymentGateway): Promise<BasePaymentGatewayInterface> {
     const gateway = this.gateways.get(provider);
     if (!gateway) {
       // If gateway not initialized, try to load from database
@@ -240,6 +242,14 @@ export class PaymentGatewayService {
       return this.getGateway(provider); // Retry after initialization
     }
 
+    return gateway;
+  }
+
+  async getTokenizationGateway(provider: PaymentGateway): Promise<TokenizationCapableGateway> {
+    const gateway = await this.getGateway(provider);
+    if (!supportsTokenization(gateway)) {
+      throw new Error(`Gateway ${provider} does not support card tokenization`);
+    }
     return gateway;
   }
 
@@ -283,12 +293,12 @@ export class PaymentGatewayService {
     await this.getGateway(provider);
   }
 
-  public async getAllActiveGateways(): Promise<PaymentGatewayInterface[]> {
+  public async getAllActiveGateways(): Promise<BasePaymentGatewayInterface[]> {
     const configs = await GatewayConfigModel.findAll({
       where: { is_active: true }
     });
 
-    const gateways: PaymentGatewayInterface[] = [];
+    const gateways: BasePaymentGatewayInterface[] = [];
     for (const dbConfig of configs) {
       try {
         const gateway = await this.getGateway(dbConfig.gateway);

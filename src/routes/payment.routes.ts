@@ -1,17 +1,62 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
+import { z } from 'zod';
 import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { PaymentGatewayService } from '../services/PaymentGatewayService';
+import { PaymentMethodConfig } from '../models/PaymentMethodConfig';
+import { GatewayConfig } from '../models/GatewayConfig';
 import { 
   PaymentMethodType, 
   PSEPaymentRequest, 
   PaymentGateway, 
   CreditCardPaymentRequest,
-  PaymentCustomer
+  PaymentCustomer,
+  PAYMENT_GATEWAYS,
+  
 } from '../types/payment';
-import {customerSchema, cardTokenPaymentSchema, processPaymentSchema, CardTokenPaymentData, ProcessPaymentData } from '../types/payment.schemas'
-import { z } from 'zod';
 
 const router = Router();
+
+interface PaymentMethodResponse {
+  id: number;
+  type: string;
+  name: string;
+  description: string | null;
+  min_amount: number | null;
+  max_amount: number | null;
+  gateway: string;
+  gateway_name: string;
+  test_mode: boolean;
+  enabled: boolean;
+}
+
+const cardTokenRequestSchema = z.object({
+  card_number: z.string()
+    .min(13, 'Card number must be at least 13 digits')
+    .max(19, 'Card number must not exceed 19 digits')
+    .regex(/^\d+$/, 'Card number must contain only digits'),
+  holder_name: z.string()
+    .min(3, 'Holder name must be at least 3 characters')
+    .regex(/^[a-zA-Z\s]+$/, 'Holder name must contain only letters and spaces'),
+  expiration_year: z.string()
+    .length(2, 'Expiration year must be 2 digits')
+    .regex(/^\d{2}$/, 'Expiration year must be 2 digits'),
+  expiration_month: z.string()
+    .length(2, 'Expiration month must be 2 digits')
+    .regex(/^(0[1-9]|1[0-2])$/, 'Expiration month must be between 01 and 12'),
+  cvv2: z.string()
+    .min(3, 'CVV must be at least 3 digits')
+    .max(4, 'CVV must not exceed 4 digits')
+    .regex(/^\d+$/, 'CVV must contain only digits'),
+  address: z.object({
+    city: z.string().min(1, 'City is required'),
+    country_code: z.string().length(2, 'Country code must be 2 characters').default('CO'),
+    postal_code: z.string().min(1, 'Postal code is required'),
+    line1: z.string().min(1, 'Address line 1 is required'),
+    line2: z.string().optional(),
+    line3: z.string().optional(),
+    state: z.string().min(1, 'State is required')
+  })
+});
 
 const testConfigSchema = z.object({
   merchantId: z.string().optional(),
@@ -62,9 +107,35 @@ const createTokenSchema = z.object({
   })
 });
 
+// Error handling middleware
+const errorHandler = (err: any, req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  console.error('Payment route error:', {
+    error: err,
+    userId: req.user?.id,
+    path: req.path,
+    method: req.method
+  });
 
-// All routes require authentication
-router.use(authMiddleware);
+  if (err instanceof z.ZodError) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'Validation failed',
+      errors: err.errors
+    });
+  }
+
+  if (err.name === 'PaymentGatewayError') {
+    return res.status(402).json({
+      status: 'error',
+      message: err.message
+    });
+  }
+
+  res.status(500).json({
+    status: 'error',
+    message: process.env.NODE_ENV === 'development' ? err.message : 'Payment processing error'
+  });
+};
 
 class PaymentTestDebugger {
   protected static readonly LOG_PREFIX = '[PaymentTest]';
@@ -130,124 +201,218 @@ class PaymentTestDebugger {
 
 /**
  * Get available payment methods
- * @route GET /api/payments/test/methods
+ * @route GET /api/payments/methods
+ * @requires authentication
  */
-router.get('/methods', async (_req: Request, res: Response) => {
-  try {
-    const gatewayService = PaymentGatewayService.getInstance();
-    const mappings = gatewayService.getMethodMappings();
-    
-    const methodsWithGateways = Array.from(mappings.entries()).map(([method, gateway]) => ({
-      method,
-      gateway
-    }));
-
-    res.json({
-      status: 'success',
-      data: methodsWithGateways
-    });
-  } catch (error) {
-    console.error('Error getting payment methods:', error);
-    res.status(500).json({
-      status: 'error',
-      message: error instanceof Error ? error.message : 'Failed to get payment methods'
-    });
-  }
-});
-
-/**
- * Create a card token
- * @route POST /api/payments/test/tokens
- */
-router.post('/tokens', async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const validatedData = createTokenSchema.parse(req.body);
-    
-    const gatewayService = PaymentGatewayService.getInstance();
-    const gateway = await gatewayService.getGateway(validatedData.paymentGateway);
-
-    // Log sanitized request (without sensitive data)
-    console.log('Token Creation Request:', {
-      gateway: validatedData.paymentGateway,
-      holder_name: validatedData.holder_name,
-      expiration_year: validatedData.expiration_year,
-      expiration_month: validatedData.expiration_month,
-      address: validatedData.address,
-      userId: req.user?.id,
-      timestamp: new Date().toISOString()
-    });
-
-    // Use the private createCardToken method from the gateway
-    const tokenResponse = await (gateway as any).createCardToken({
-      ...validatedData,
-      device_session_id: req.headers['x-device-session-id']
-    });
-
-    res.json({
-      status: 'success',
-      data: tokenResponse
-    });
-
-  } catch (error) {
-    console.error('Token creation error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: error instanceof Error ? error.message : 'Failed to create card token'
-    });
-  }
-});
-
-/**
- * Process payment with card token
- * @route POST /api/payments/test/card
- */
-router.post('/card', async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const validatedData = cardTokenPaymentSchema.parse(req.body);
-    
-    const gatewayService = PaymentGatewayService.getInstance();
-    const gateway = await gatewayService.getGatewayForMethod('CREDIT_CARD');
-
-    if (gateway.getGatewayInfo().provider !== validatedData.paymentGateway) {
-      throw new Error(`Payment gateway ${validatedData.paymentGateway} is not enabled for credit card payments`);
-    }
-
-    const paymentRequest: CreditCardPaymentRequest = {
-      amount: validatedData.amount,
-      currency: validatedData.currency,
-      description: validatedData.description,
-      tokenId: validatedData.tokenId,
-      deviceSessionId: validatedData.deviceSessionId,
-      customer: {
-        name: validatedData.customer.name,
-        last_name: validatedData.customer.last_name,
-        email: validatedData.customer.email,
-        phone_number: validatedData.customer.phone_number,
-        requires_account: validatedData.customer.requires_account || false
-      }
-    };
-
-    const response = await gateway.processCreditCardPayment(paymentRequest);
-
-    res.json({
-      status: 'success',
-      data: response
-    });
-  } catch (error) {
-    console.error('Card payment error:', error);
-    if (error instanceof z.ZodError) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Invalid payment data',
-        details: error.errors
+router.get('/methods',
+  authMiddleware,
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const methods = await PaymentMethodConfig.findAll({
+        where: { enabled: true },
+        include: [{
+          model: GatewayConfig,
+          as: 'gatewayConfig',
+          where: { is_active: true },
+          attributes: ['gateway', 'name', 'test_mode'],
+          required: true // This ensures gatewayConfig is not null
+        }],
+        order: [['name', 'ASC']]
       });
+
+      const processedMethods = methods
+        .filter(method => method.gatewayConfig) // Extra safety check
+        .map(method => ({
+          id: method.id,
+          type: method.type,
+          name: method.name,
+          description: method.description,
+          min_amount: method.min_amount,
+          max_amount: method.max_amount,
+          gateway: method.gatewayConfig!.gateway, // Safe to use ! because of filter
+          gateway_name: method.gatewayConfig!.name,
+          test_mode: method.gatewayConfig!.test_mode,
+          enabled: method.enabled
+        }));
+
+      res.json({
+        status: 'success',
+        data: processedMethods
+      });
+
+    } catch (error) {
+      next(error);
     }
-    res.status(500).json({
-      status: 'error',
-      message: error instanceof Error ? error.message : 'Failed to process card payment'
-    });
-  }
 });
+
+/**
+ * Get a specific payment method
+ * @route GET /api/payments/methods/:id
+ * @requires authentication
+ */
+router.get('/methods/:id',
+  authMiddleware,
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const method = await PaymentMethodConfig.findOne({
+        where: { 
+          id: req.params.id,
+          enabled: true 
+        },
+        include: [{
+          model: GatewayConfig,
+          as: 'gatewayConfig',
+          where: { is_active: true },
+          attributes: ['gateway', 'name', 'test_mode'],
+          required: true
+        }]
+      });
+
+      if (!method || !method.gatewayConfig) {
+        return res.status(404).json({
+          status: 'error',
+          message: 'Payment method not found or not available'
+        });
+      }
+
+      const response: PaymentMethodResponse = {
+        id: method.id,
+        type: method.type,
+        name: method.name,
+        description: method.description,
+        min_amount: method.min_amount,
+        max_amount: method.max_amount,
+        gateway: method.gatewayConfig.gateway,
+        gateway_name: method.gatewayConfig.name,
+        test_mode: method.gatewayConfig.test_mode,
+        enabled: method.enabled
+      };
+
+      res.json({
+        status: 'success',
+        data: response
+      });
+
+    } catch (error) {
+      next(error);
+    }
+});
+
+/**
+ * Validate if a payment method is available for an amount
+ * @route POST /api/payments/methods/validate
+ * @requires authentication
+ */
+router.post('/methods/validate',
+  authMiddleware,
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const { method_id, amount } = req.body;
+
+      const method = await PaymentMethodConfig.findOne({
+        where: { 
+          id: method_id,
+          enabled: true 
+        },
+        include: [{
+          model: GatewayConfig,
+          as: 'gatewayConfig',
+          where: { is_active: true },
+          required: true
+        }]
+      });
+
+      if (!method || !method.gatewayConfig) {
+        return res.status(404).json({
+          status: 'error',
+          message: 'Payment method not found or not available'
+        });
+      }
+
+      // Validate amount range
+      const isValidAmount = (!method.min_amount || amount >= method.min_amount) &&
+                          (!method.max_amount || amount <= method.max_amount);
+
+      res.json({
+        status: 'success',
+        data: {
+          valid: isValidAmount,
+          method: {
+            id: method.id,
+            type: method.type,
+            name: method.name,
+            gateway: method.gatewayConfig.gateway,
+            min_amount: method.min_amount,
+            max_amount: method.max_amount
+          },
+          validation: {
+            amount_in_range: isValidAmount,
+            amount: amount,
+            errors: !isValidAmount ? [
+              method.min_amount && amount < method.min_amount ? 
+                `Amount below minimum (${method.min_amount})` : undefined,
+              method.max_amount && amount > method.max_amount ? 
+                `Amount above maximum (${method.max_amount})` : undefined
+            ].filter(Boolean) : []
+          }
+        }
+      });
+
+    } catch (error) {
+      next(error);
+    }
+});
+
+/**
+ * Create a card token with Openpay
+ * @route POST /api/payments/cards/tokens
+ * @requires authentication
+ */
+router.post('/cards/tokens', 
+  authMiddleware,
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      // First verify user is authenticated
+      if (!req.user) {
+        return res.status(401).json({
+          status: 'error',
+          message: 'Authentication required'
+        });
+      }
+      const gatewayService = PaymentGatewayService.getInstance();
+      const validatedData = cardTokenRequestSchema.parse(req.body);
+      try {
+        const gateway = await gatewayService.getTokenizationGateway('OPENPAY');
+        const tokenResponse = await gateway.createCardToken(validatedData);
+        res.json({
+          status: 'success',
+          data: {
+            token_id: tokenResponse.id,
+            card: {
+              brand: tokenResponse.card.brand,
+              type: tokenResponse.card.type,
+              bank_name: tokenResponse.card.bank_name,
+              holder_name: tokenResponse.card.holder_name,
+              last_digits: tokenResponse.card.card_number.slice(-4),
+              expiration_month: tokenResponse.card.expiration_month,
+              expiration_year: tokenResponse.card.expiration_year
+            }
+          }
+        });
+      }catch(error){
+        if (error instanceof Error && error.message.includes('does not support card tokenization')) {
+          return res.status(400).json({
+            status: 'error',
+            message: 'Card tokenization is not supported by this payment gateway'
+          });
+        }
+        throw error;
+      }
+    } catch (error) {
+      next(error);
+    }
+});
+
 
 /**
  * Process PSE Payment
@@ -370,127 +535,6 @@ router.get('/status/:gateway/:transactionId', async (req: Request, res: Response
   }
 });
 
-/**
- * Test OpenPay authentication and configuration
- * @route POST /api/payments/test/auth/openpay
- */
-router.post('/auth/openpay', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const validatedData = testConfigSchema.parse(req.body);
-    const requestInfo = PaymentTestDebugger.getRequestInfo(req);
-    
-    PaymentTestDebugger.logAuthTest(
-      req.user?.id, 
-      requestInfo.ipAddress,
-      requestInfo.userAgent
-    );
-
-    const gatewayService = PaymentGatewayService.getInstance();
-    const gateway = await gatewayService.getGateway('OPENPAY');
-    const testResult = await gateway.testConnection();
-    const gatewayInfo = gateway.getGatewayInfo();
-
-    const response = {
-      status: 'success',
-      data: {
-        test: testResult,
-        gateway: {
-          provider: gatewayInfo.provider,
-          endpoint: gatewayInfo.endpoint?.replace(/\/v1\/?$/, ''),
-          testMode: gatewayInfo.testMode,
-          webhookConfigured: Boolean(gatewayInfo.webhookUrl)
-        },
-        request: {
-          ipAddress: requestInfo.ipAddress,
-          userAgent: requestInfo.userAgent,
-          timestamp: new Date().toISOString(),
-          userId: req.user?.id
-        }
-      }
-    };
-
-    console.log(PaymentTestDebugger.formatLogMessage('Auth Test Success:'), {
-      userId: req.user?.id,
-      gateway: response.data.gateway.provider,
-      testMode: response.data.gateway.testMode,
-      timestamp: new Date().toISOString()
-    });
-
-    res.json(response);
-
-  } catch (error) {
-    const errorDetails = PaymentTestDebugger.logError(error, 'OpenPay Auth Test');
-    
-    res.status(500).json({
-      status: 'error',
-      message: errorDetails.message,
-      details: {
-        timestamp: errorDetails.timestamp,
-        type: errorDetails.type,
-        path: '/api/payments/auth/openpay'
-      }
-    });
-  }
-});
-
-/**
- * Get OpenPay configuration status
- * @route GET /api/payments/test/auth/openpay/status
- */
-router.get('/auth/openpay/status', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const requestInfo = PaymentTestDebugger.getRequestInfo(req);
-    const envInfo = PaymentTestDebugger.getEnvironmentInfo();
-
-    const gatewayService = PaymentGatewayService.getInstance();
-    const gateway = await gatewayService.getGateway('OPENPAY');
-    const gatewayInfo = gateway.getGatewayInfo();
-    const methodMappings = gatewayService.getMethodMappings();
-
-    // Get enabled payment methods for OpenPay
-    const enabledMethods = Array.from(methodMappings.entries())
-      .filter(([_, gateway]) => gateway === 'OPENPAY')
-      .map(([method]) => method);
-
-    const status = {
-      status: 'success',
-      data: {
-        provider: gatewayInfo.provider,
-        testMode: gatewayInfo.testMode,
-        webhookConfigured: Boolean(gatewayInfo.webhookUrl),
-        enabledMethods,
-        configuration: {
-          endpointConfigured: Boolean(gatewayInfo.endpoint),
-          credentialsConfigured: Boolean(envInfo.hasOpenpayKey && envInfo.hasOpenpaySecret),
-          merchantConfigured: Boolean(envInfo.hasOpenpayMerchant)
-        },
-        timestamp: new Date().toISOString()
-      }
-    };
-
-    PaymentTestDebugger.logConfigCheck(
-      req.user?.id, 
-      requestInfo.ipAddress, 
-      status.data.configuration
-    );
-
-    res.json(status);
-
-  } catch (error) {
-    const errorDetails = PaymentTestDebugger.logError(error, 'OpenPay Status Check');
-    
-    res.status(500).json({
-      status: 'error',
-      message: errorDetails.message,
-      details: {
-        timestamp: errorDetails.timestamp,
-        type: errorDetails.type,
-        path: '/api/payments/test/auth/openpay/status'
-      }
-    });
-  }
-});
-
 router.get('/status/:transactionId', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { transactionId } = req.params;
@@ -553,5 +597,6 @@ router.post('/webhook', async (req: Request, res: Response) => {
   }
 });
 
+router.use(errorHandler);
 
 export default router;

@@ -3,7 +3,6 @@ import { Optional } from 'sequelize';
 export const PAYMENT_METHOD_TYPES = ['PSE', 'CREDIT_CARD', 'DEBIT_CARD', 'TRANSFER', 'CASH'] as const;
 export type PaymentMethodType = typeof PAYMENT_METHOD_TYPES[number];
 
-
 // Payment Gateways
 export const PAYMENT_GATEWAYS = ['GOU', 'OPENPAY'] as const;
 export type PaymentGateway = typeof PAYMENT_GATEWAYS[number];
@@ -70,15 +69,48 @@ export interface PSEBank {
   status: 'active' | 'inactive';
 }
 
-// Payment Gateway Interface
-export interface PaymentGatewayInterface {
-  getGatewayInfo(): Partial<GatewayConfig>;
-  processPSEPayment(request: PSEPaymentRequest): Promise<PaymentResponse>;
+export interface TokenizeCardRequest {
+  card_number: string;
+  holder_name: string;
+  expiration_year: string;
+  expiration_month: string;
+  cvv2: string;
+  address: BaseAddress;
+}
+
+export interface TokenResponse {
+  id: string;
+  card: {
+    card_number: string;
+    holder_name: string;
+    expiration_year: string;
+    expiration_month: string;
+    bank_name?: string;
+    bank_code?: string;
+    type?: string;
+    brand?: string;
+  };
+}
+
+
+export interface BasePaymentGatewayInterface {
   processCreditCardPayment(request: CreditCardPaymentRequest): Promise<PaymentResponse>;
+  processPSEPayment(request: PSEPaymentRequest): Promise<PaymentResponse>;
   verifyTransaction(transactionId: string): Promise<PaymentResponse>;
   refundTransaction(transactionId: string, amount?: number): Promise<PaymentResponse>;
   getBanks(): Promise<PSEBank[]>;
+  getGatewayInfo(): Partial<GatewayConfigData>;
   testConnection(): Promise<any>;
+}
+
+export interface TokenizationCapableGateway extends BasePaymentGatewayInterface {
+  createCardToken(request: TokenizeCardRequest): Promise<TokenResponse>;
+}
+
+export function supportsTokenization(
+  gateway: BasePaymentGatewayInterface
+): gateway is TokenizationCapableGateway {
+  return 'createCardToken' in gateway;
 }
 
 // Payer Information Interface
@@ -281,6 +313,16 @@ export interface BaseCustomer {
   phone_number: string;
   requires_account?: boolean;
 }
+
+export interface BaseAddress{
+    city: string;
+    country_code: string;
+    postal_code: string;
+    line1: string;
+    line2?: string;
+    line3?: string;
+    state: string;
+  };
 
 // Credit card payment request
 export interface CreditCardPaymentRequest extends BasePaymentRequest {

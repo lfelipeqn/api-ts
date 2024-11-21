@@ -30,6 +30,7 @@ import {
   ProcessedPaymentResponse,
   PaymentMethodType,
   PaymentGateway,
+  PaymentDetails
 } from '../types/payment';
 
 
@@ -444,69 +445,52 @@ export class CheckoutService {
     };
   }
 
-  async processPayment(
-    checkoutOrderId: number, 
-    paymentData: PaymentRequestData
-  ): Promise<ProcessedPaymentResponse> {
+  async processPayment(orderId: number, paymentData: PaymentRequestData): Promise<ProcessedPaymentResponse> {
+    const sequelize = Order.sequelize!;
+    const t = await sequelize.transaction();
+    let isTransactionCommitted = false;
+    let paymentDetails = null;
+  
     try {
-      const order = await Order.findByPk(checkoutOrderId, {
+      const order = await Order.findByPk(orderId, {
         include: [{
           model: PaymentMethodConfig,
           as: 'paymentMethod'
-        }]
+        }],
+        transaction: t
       });
-
+  
       if (!order) {
+        await t.rollback();
         throw new Error('Order not found');
       }
-
-      if (!order.paymentMethod?.type) {
-        throw new Error('Payment method not configured for order');
-      }
-
-      const gatewayService = PaymentGatewayService.getInstance();
-      const gateway = await gatewayService.getGatewayForMethod(order.paymentMethod.type);
-      const orderReference = this.createOrderReference(order.id);
-      
-      // Get gateway info and validate provider
-      const gatewayInfo = gateway.getGatewayInfo();
-      if (!gatewayInfo.provider) {
-        throw new Error('Gateway provider not configured');
-      }
-
-      // Create initial payment record
+  
+      // Create payment record
       const payment = await Payment.create({
-        order_id: order.id,
+        order_id: orderId,
         payment_method_id: order.payment_method_id,
         transaction_id: `${Date.now()}`,
-        reference: orderReference,
+        reference: this.createOrderReference(order.id),
         amount: order.total_amount,
         currency: order.currency,
         state: 'PENDING',
         state_description: 'Payment initiated',
-        gateway: gatewayInfo.provider, // This is now type-safe
+        gateway: order.paymentMethod!.payment_gateway,
         attempts: 1,
         last_attempt_at: new Date(),
         user_id: order.user_id
-      });
-
+      }, { transaction: t });
+  
+      let response;
       try {
-        let response: PaymentResponse;
-
-        if (order.paymentMethod.type === 'CREDIT_CARD' && 'tokenId' in paymentData) {
-          response = await gateway.processCreditCardPayment(
-            this.createCardPaymentRequest(order, paymentData, orderReference)
-          );
-        } 
-        else if (order.paymentMethod.type === 'PSE' && 'redirectUrl' in paymentData) {
-          response = await gateway.processPSEPayment(
-            this.createPSEPaymentRequest(order, paymentData, orderReference)
-          );
-        } 
-        else {
-          throw new Error('Invalid payment method or request data');
-        }
-
+        const gateway = await this.gatewayService.getGatewayForMethod(order.paymentMethod!.type);
+        const orderReference = this.createOrderReference(order.id);
+  
+        // Process payment
+        response = await gateway.processCreditCardPayment(
+          this.createCardPaymentRequest(order, paymentData as CardPaymentRequestData, orderReference)
+        );
+  
         // Update payment record with response
         await payment.update({
           transaction_id: response.id,
@@ -520,34 +504,98 @@ export class CheckoutService {
             payment_method: response.paymentMethod,
             ...response.metadata
           })
+        }, { transaction: t });
+  
+        // Update order state based on payment status
+        const orderState = this.mapPaymentStatusToOrderState(response.status);
+        await order.update({
+          state: orderState,
+          last_payment_id: payment.id
+        }, { transaction: t });
+  
+        // Get payment details within the transaction
+        const paymentWithDetails = await Payment.findOne({
+          where: { id: payment.id },
+          include: [{
+            model: PaymentMethodConfig,
+            as: 'paymentMethod'
+          }],
+          transaction: t
         });
-
-        // Update order status
-        await order.updatePaymentState(
-          this.mapPaymentStatusToOrderState(response.status),
-          payment.id
-        );
-
-        const paymentDetails = await payment.getPaymentDetails();
-
+  
+        if (!paymentWithDetails) {
+          throw new Error('Payment not found after creation');
+        }
+  
+        paymentDetails = this.formatPaymentDetails(paymentWithDetails, response);
+  
+        // Commit the transaction
+        await t.commit();
+        isTransactionCommitted = true;
+  
+        // Return the response with payment details
         return {
           ...response,
           paymentDetails
-        };
+        } as ProcessedPaymentResponse;
+  
       } catch (error) {
-        await payment.updateState(
-          'FAILED',
-          error instanceof Error ? error.message : 'Payment processing failed'
-        );
-        await order.updatePaymentState('PAYMENT_FAILED', payment.id);
+        // Payment processing failed - update records and commit
+        await payment.update({
+          state: 'FAILED',
+          state_description: error instanceof Error ? error.message : 'Payment processing failed',
+          last_attempt_at: new Date(),
+          attempts: payment.attempts + 1
+        }, { transaction: t });
+  
+        await order.update({
+          state: 'PAYMENT_FAILED',
+          last_payment_id: payment.id
+        }, { transaction: t });
+  
+        // Commit the failure state
+        await t.commit();
+        isTransactionCommitted = true;
+  
         throw error;
       }
+  
     } catch (error) {
-      console.error('Payment processing error:', error);
+      // Only rollback if we haven't committed
+      if (!isTransactionCommitted) {
+        try {
+          await t.rollback();
+        } catch (rollbackError) {
+          console.error('Rollback failed:', rollbackError);
+        }
+      }
       throw error;
     }
   }
 
+  private formatPaymentDetails(payment: Payment, response: any): PaymentDetails {
+    return {
+      id: payment.id,
+      transaction_id: payment.transaction_id,
+      reference: payment.reference,
+      amount: Number(payment.amount),
+      currency: payment.currency,
+      state: payment.state as PaymentState,
+      gateway_info: payment.gateway ? {
+        provider: payment.gateway,
+        reference: payment.external_reference || undefined,  // Convert null to undefined
+        authorization: response.metadata?.authorization || undefined,
+        transaction_date: response.metadata?.operation_date || undefined
+      } : undefined,
+      payment_method: payment.paymentMethod ? {
+        id: payment.paymentMethod.id,
+        type: payment.paymentMethod.type,
+        name: payment.paymentMethod.name
+      } : undefined,
+      metadata: payment.metadata ? JSON.parse(payment.metadata) : undefined
+    };
+  }
+  
 
   private async handlePaymentResponse(
     order: Order,
@@ -749,7 +797,4 @@ export class CheckoutService {
       };
     }
   }
-
-
-
 }

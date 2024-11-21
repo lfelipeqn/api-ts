@@ -1,12 +1,12 @@
 import { 
-  PaymentGatewayInterface,
   GatewayConfigData,
   PaymentResponse,
   PSEPaymentRequest,
   PSEBank,
   PaymentState,
   PaymentMethodType,
-  CreditCardPaymentRequest
+  CreditCardPaymentRequest,
+  BasePaymentGatewayInterface
 } from '../types/payment';
 import { randomBytes, createHash } from 'crypto';
 
@@ -163,7 +163,7 @@ interface GouAPIResponse {
 }
 
 
-export class GouPaymentGateway implements PaymentGatewayInterface {
+export class GouPaymentGateway implements BasePaymentGatewayInterface {
   private readonly baseUrl: string;
   private readonly login: string;
   private readonly secretKey: string;

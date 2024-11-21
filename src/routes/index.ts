@@ -6,7 +6,7 @@ import productRoutes from './product.routes';
 import authRoutes from './auth.routes';
 import cartRoutes from './cart.routes';
 import paymentConfigRoutes from './payment-config.routes';
-import paymentTestRoutes from './payment-test.routes';
+import paymentRoutes from './payment.routes';
 import checkoutRoutes from './checkout.routes';
 
 const router = Router();
@@ -22,8 +22,8 @@ router.use('/api', apiRouter);
 apiRouter.use('/auth', authRoutes);
 apiRouter.use('/', productRoutes); // This will preserve existing product routes under /api
 apiRouter.use('/', cartRoutes);
-apiRouter.use('/payments', paymentConfigRoutes);
-apiRouter.use('/payments', paymentTestRoutes);
+apiRouter.use('/payments-config', paymentConfigRoutes);
+apiRouter.use('/payments', paymentRoutes);
 apiRouter.use('/checkout', checkoutRoutes);
 
 // Global error handler - this should be the last middleware

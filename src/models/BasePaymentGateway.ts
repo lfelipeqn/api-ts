@@ -1,19 +1,20 @@
 import { 
-    PaymentGateway,
-    PaymentGatewayInterface,
-    GatewayConfigData,
-    PaymentMethodType,
-    PaymentState,
-    PSEBank,
-    BaseGatewayConfig,
-    CreditCardPaymentRequest,
-    PSEPaymentRequest,
-    PaymentResponse
-  } from '../types/payment';
+  PaymentGateway,
+  GatewayConfigData,
+  PaymentState,
+  PSEBank,
+  BaseGatewayConfig,
+  CreditCardPaymentRequest,
+  PSEPaymentRequest,
+  PaymentResponse,
+  TokenizeCardRequest,
+  TokenResponse,
+  BasePaymentGatewayInterface
+} from '../types/payment';
   
   
   // Abstract base class for payment gateways
-  export abstract class BasePaymentGateway implements PaymentGatewayInterface {
+  export abstract class BasePaymentGateway implements BasePaymentGatewayInterface {
     protected config: BaseGatewayConfig;
     protected gatewayName: PaymentGateway;
   
@@ -38,6 +39,8 @@ import {
     protected abstract formatBanksResponse(response: any): PSEBank[];
     protected abstract getRequestHeaders(): Promise<Headers>;
     protected abstract handleErrorResponse(response: Response): Promise<Error>;
+    protected abstract formatTokenRequest(request: TokenizeCardRequest): any;
+    protected abstract formatTokenResponse(response: any): TokenResponse;
   
     public getGatewayInfo(): Partial<GatewayConfigData> {
       return {
@@ -121,6 +124,17 @@ import {
       }
   
       return response.json();
+    }
+
+    public async createCardToken(request: TokenizeCardRequest): Promise<TokenResponse> {
+      try {
+        const tokenRequest = this.formatTokenRequest(request);
+        const response = await this.makeRequest('/tokens', 'POST', tokenRequest);
+        return this.formatTokenResponse(response);
+      } catch (error) {
+        console.error(`${this.gatewayName} token creation error:`, error);
+        throw error;
+      }
     }
   
     public async testConnection(): Promise<any> {
