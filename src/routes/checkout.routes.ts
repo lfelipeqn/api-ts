@@ -59,8 +59,9 @@ const psePaymentSchema = z.object({
 
 // Validation schemas
 const initCheckoutSchema = z.object({
-  cartId: z.number()
-});
+  // Remove cartId field - no longer needed
+  // Add any other fields that might be needed in the future
+}).optional();
 
 const deliveryMethodSchema = z.object({
   type: z.enum(['SHIPPING', 'PICKUP']),
@@ -155,7 +156,6 @@ router.use(authMiddleware);
 
 router.post('/init', authMiddleware, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const { cartId } = initCheckoutSchema.parse(req.body);
     const userId = req.user?.id;
 
     if (!userId) {
@@ -165,9 +165,9 @@ router.post('/init', authMiddleware, async (req: AuthenticatedRequest, res: Resp
       });
     }
 
+    // Find user's active cart
     const cart = await Cart.findOne({
       where: {
-        id: cartId,
         user_id: userId,
         status: 'active'
       }
@@ -176,16 +176,31 @@ router.post('/init', authMiddleware, async (req: AuthenticatedRequest, res: Resp
     if (!cart) {
       return res.status(404).json({
         status: 'error',
-        message: 'Active cart not found for user'
+        message: 'No active cart found'
       });
     }
 
-    const session = await checkoutService.createSession(cartId, userId);
+    // Validate cart has items
+    const cartDetails = await cart.getDetails();
+    if (!cartDetails?.length) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Cart is empty'
+      });
+    }
+
+    // Create checkout session
+    const session = await checkoutService.createSession(cart.id, userId);
+
     return res.json({
       status: 'success',
       data: {
         sessionId: session.id,
-        expiresAt: session.expires_at
+        expiresAt: session.expires_at,
+        cart: {
+          id: cart.id,
+          items_count: cartDetails.length
+        }
       }
     });
   } catch (error) {
@@ -385,13 +400,19 @@ router.post('/process-payment/:orderId', async (req: AuthenticatedRequest, res: 
     // Process payment
     const paymentResponse = await checkoutService.processPayment(orderId, validatedData);
 
+    // Update order state based on payment status
+    const newOrderState = paymentResponse.status === 'APPROVED' ? 'PAYMENT_COMPLETED' : 'PAYMENT_FAILED';
+    await order.update({
+      state: newOrderState,
+    });
+
     return res.json({
       status: 'success',
       data: {
         payment: paymentResponse,
         paymentDetails: paymentResponse.paymentDetails,
         orderId: order.id,
-        orderState: order.state
+        orderState: newOrderState // Return the correct order state
       }
     });
 

@@ -31,11 +31,30 @@ interface OpenPayCardData {
   cvv2: string;
 }
 
+interface OpenPayCustomerAddress {
+  department: string;
+  city: string;
+  additional: string;
+}
+
 interface OpenPayCustomer {
   name: string;
-  last_name?: string;
+  last_name: string;
   email: string;
-  phone_number?: string;
+  phone_number: string;
+  requires_account: boolean;
+  customer_address?: OpenPayCustomerAddress;
+}
+
+interface OpenPayPSERequest {
+  method: 'bank_account';
+  amount: number;
+  currency: 'COP';
+  description: string;
+  order_id: string;
+  iva: string;
+  redirect_url: string;
+  customer: OpenPayCustomer;
 }
 
 interface OpenPayError {
@@ -207,6 +226,10 @@ export class OpenPayPaymentGateway extends BasePaymentGateway implements Tokeniz
       });
     }
 
+    if (data && data.method === 'bank_account') {
+      this.validatePSERequest(data);
+    }
+
     console.log('Making OpenPay request:', {
       url,
       method,
@@ -280,29 +303,46 @@ export class OpenPayPaymentGateway extends BasePaymentGateway implements Tokeniz
     };
   }
 
-  protected formatPSEPaymentRequest(request: PSEPaymentRequest): any {
+  protected formatPSEPaymentRequest(request: PSEPaymentRequest): OpenPayPSERequest {
     // Format amount - remove decimals for COP currency
     const amount = request.currency === 'COP' ? 
       Math.floor(request.amount) : 
       request.amount;
-
-    return {
+  
+    // Create the customer object first
+    const customer: OpenPayCustomer = {
+      name: request.customer.name,
+      last_name: request.customer.last_name,
+      email: request.customer.email,
+      phone_number: request.customer.phone_number,
+      requires_account: false
+    };
+  
+    // Add customer_address if present
+    if (request.customer.address) {
+      customer.customer_address = {
+        department: request.customer.address.department,
+        city: request.customer.address.city,
+        additional: request.customer.address.additional
+      };
+    }
+  
+    // Create the formatted request
+    const formattedRequest: OpenPayPSERequest = {
       method: 'bank_account',
       amount,
-      currency: request.currency,
+      currency: 'COP',
       description: request.description,
-      order_id: request.metadata?.orderId,
-      iva: "1900",
+      order_id: request.metadata?.orderId || `order-${Date.now()}`,
+      iva: '19',
       redirect_url: request.redirectUrl,
-      customer: {
-        name: request.customer.name,
-        last_name: request.customer.last_name,
-        email: request.customer.email,
-        phone_number: request.customer.phone_number,
-        requires_account: request.customer.requires_account,
-        customer_address: request.customer.address
-      }
+      customer
     };
+  
+    // Log the formatted request
+    console.log('Formatted PSE request:', JSON.stringify(formattedRequest, null, 2));
+  
+    return formattedRequest;
   }
 
   protected formatPSEResponse(response: OpenPayPSEResponse): PaymentResponse {
@@ -426,6 +466,96 @@ export class OpenPayPaymentGateway extends BasePaymentGateway implements Tokeniz
     } catch (error) {
       console.error('Error creating card token:', error);
       throw new Error(error instanceof Error ? error.message : 'Failed to create card token');
+    }
+  }
+
+  private validatePSERequest(request: OpenPayPSERequest): void {
+    // Log request details for debugging
+    console.log('Validating PSE request:', {
+      requestFields: Object.keys(request),
+      amount: request.amount,
+      currency: request.currency,
+      method: request.method,
+      customerFields: request.customer ? Object.keys(request.customer) : null
+    });
+  
+    // Validate method field specifically
+    if (request.method !== 'bank_account') {
+      throw new Error(`Invalid payment method. Expected 'bank_account', got '${request.method}'`);
+    }
+  
+    // Validate required fields and their types
+    const validations = [
+      { field: 'amount', type: 'number' },
+      { field: 'currency', value: 'COP' },
+      { field: 'description', type: 'string' },
+      { field: 'order_id', type: 'string' },
+      { field: 'iva', type: 'string' },
+      { field: 'redirect_url', type: 'string' }
+    ];
+  
+    for (const validation of validations) {
+      if (!request[validation.field as keyof OpenPayPSERequest]) {
+        throw new Error(`Missing required field: ${validation.field}`);
+      }
+  
+      if (validation.type && typeof request[validation.field as keyof OpenPayPSERequest] !== validation.type) {
+        throw new Error(
+          `Invalid type for field ${validation.field}. Expected ${validation.type}, got ${
+            typeof request[validation.field as keyof OpenPayPSERequest]
+          }`
+        );
+      }
+  
+      if (validation.value && request[validation.field as keyof OpenPayPSERequest] !== validation.value) {
+        throw new Error(
+          `Invalid value for field ${validation.field}. Expected ${validation.value}, got ${
+            request[validation.field as keyof OpenPayPSERequest]
+          }`
+        );
+      }
+    }
+  
+    // Validate customer object and its required fields
+    if (!request.customer || typeof request.customer !== 'object') {
+      throw new Error('Missing or invalid customer object');
+    }
+  
+    const requiredCustomerFields = {
+      name: 'string',
+      last_name: 'string',
+      email: 'string',
+      phone_number: 'string'
+    };
+  
+    for (const [field, type] of Object.entries(requiredCustomerFields)) {
+      if (!request.customer[field as keyof typeof requiredCustomerFields]) {
+        throw new Error(`Missing required customer field: ${field}`);
+      }
+      if (typeof request.customer[field as keyof typeof requiredCustomerFields] !== type) {
+        throw new Error(
+          `Invalid type for customer field ${field}. Expected ${type}, got ${
+            typeof request.customer[field as keyof typeof requiredCustomerFields]
+          }`
+        );
+      }
+    }
+  
+    // Validate customer_address if present
+    if (request.customer.customer_address) {
+      const requiredAddressFields: Array<keyof OpenPayCustomerAddress> = ['department', 'city', 'additional'];
+      for (const field of requiredAddressFields) {
+        if (!request.customer.customer_address[field]) {
+          throw new Error(`Missing required customer_address field: ${field}`);
+        }
+        if (typeof request.customer.customer_address[field] !== 'string') {
+          throw new Error(
+            `Invalid type for customer_address field ${field}. Expected string, got ${
+              typeof request.customer.customer_address[field]
+            }`
+          );
+        }
+      }
     }
   }
 

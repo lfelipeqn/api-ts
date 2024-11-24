@@ -64,8 +64,11 @@ import {
   
     public async processPSEPayment(request: PSEPaymentRequest): Promise<PaymentResponse> {
       try {
+        console.log('Processing PSE payment request:', JSON.stringify(request, null, 2));
         const gatewayRequest = this.formatPSEPaymentRequest(request);
-        const response = await this.makeRequest('/pse/charges', 'POST', gatewayRequest);
+        console.log('Formatted PSE request:', JSON.stringify(gatewayRequest, null, 2));
+        const response = await this.makeRequest('/charges', 'POST', gatewayRequest);
+        console.log('PSE payment response:', JSON.stringify(response, null, 2));
         return this.formatPSEResponse(response);
       } catch (error) {
         console.error(`${this.gatewayName} PSE payment error:`, error);
