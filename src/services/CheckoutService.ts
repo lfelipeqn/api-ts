@@ -1,8 +1,6 @@
 // services/CheckoutService.ts
 
-import { Op, Transaction, WhereOptions, Optional, FindOptions, ModelStatic, 
-  InferAttributes,
-  NonNullFindOptions, Sequelize } from 'sequelize';
+import { Transaction, Optional, Sequelize } from 'sequelize';
   import { getSequelize } from '../config/database';
 import { Cart } from '../models/Cart';
 import { Order } from '../models/Order';
@@ -16,11 +14,8 @@ import { CheckoutSession, OrderState, DeliveryType } from '../types/checkout';
 import { Cache } from './Cache';
 import { randomBytes } from 'crypto';
 import { CartDetail } from '../models/CartDetail';
-import { Product } from '../models/Product';
-import { PriceHistory } from '../models/PriceHistory';
 import { OrderPriceHistory } from '../models/OrderPriceHistory';
-import { OrderAttributes, OrderCreationAttributes } from '../types/order';
-import { CartAttributes, CartSummary } from '../types/cart';
+import { CartSummary } from '../types/cart';
 import { CartSessionManager } from './CartSessionManager';
 
 import { 
@@ -431,7 +426,7 @@ export class CheckoutService {
       redirectUrl: paymentData.redirectUrl,
       metadata: {
         orderId: orderReference,
-        iva: "1900" // Colombian tax for PSE
+        iva: "19" // Colombian tax for PSE
       },
       customer: {
         name: paymentData.customer.name,
@@ -452,11 +447,13 @@ export class CheckoutService {
     const t = await this.sequelize!.transaction();
     let isTransactionCommitted = false;
     let paymentDetails = null;
+    let orderState: OrderState = 'PAYMENT_PENDING';
   
     try {
       const order = await this.getOrderWithPaymentConfig(orderId, t);
       const paymentMethod = order.paymentMethod!.type;
       const gateway = order.paymentMethod!.gatewayConfig!.gateway;
+      const isPSE = paymentMethod === 'PSE';
   
       // Create initial payment record
       const payment = await Payment.create({
@@ -467,7 +464,7 @@ export class CheckoutService {
         amount: order.total_amount,
         currency: order.currency,
         state: 'PENDING',
-        state_description: paymentMethod === 'PSE' ? 'Awaiting bank redirect' : 'Payment initiated',
+        state_description: isPSE ? 'Awaiting bank redirect' : 'Payment initiated',
         gateway,
         attempts: 1,
         last_attempt_at: new Date(),
@@ -475,93 +472,74 @@ export class CheckoutService {
       }, { transaction: t });
   
       let response;
-      try {
-        const gatewayService = await this.gatewayService.getGatewayForMethod(paymentMethod);
-        const orderReference = this.createOrderReference(order.id);
+
+      const gatewayService = await this.gatewayService.getGatewayForMethod(paymentMethod);
+      const orderReference = this.createOrderReference(order.id);
+
+      if (isPSE) {
+        response = await gatewayService.processPSEPayment(
+          this.createPSEPaymentRequest(order, paymentData as PSEPaymentRequestData, orderReference)
+        );
   
-        // Process based on payment method
-        if (paymentMethod === 'PSE') {
-          response = await gatewayService.processPSEPayment(
-            this.createPSEPaymentRequest(order, paymentData as PSEPaymentRequestData, orderReference)
-          );
-        } else if (paymentMethod === 'CREDIT_CARD') {
-          response = await gatewayService.processCreditCardPayment(
-            this.createCardPaymentRequest(order, paymentData as CardPaymentRequestData, orderReference)
-          );
-        } else {
-          throw new Error(`Unsupported payment method: ${paymentMethod}`);
-        }
-  
-        // Update payment record with response
-        await payment.update({
-          transaction_id: response.id,
-          reference: response.gatewayReference || response.id,
-          state: response.status,
-          state_description: this.getPaymentStateDescription(response.status, paymentMethod),
-          gateway_response: JSON.stringify(response.metadata || {}),
-          external_reference: response.gatewayReference,
-          url: response.redirectUrl,
-          metadata: JSON.stringify({
-            payment_method: response.paymentMethod,
-            gateway_info: {
-              provider: gateway,
-              redirect_url: response.redirectUrl,
-              reference: response.gatewayReference,
-              created_at: new Date().toISOString()
-            },
-            ...response.metadata
-          })
-        }, { transaction: t });
-  
-        // Update order state based on payment status and method
-        const orderState = this.mapPaymentStatusToOrderState(response.status, paymentMethod);
-        await order.update({
-          state: orderState,
-          last_payment_id: payment.id
-        }, { transaction: t });
-  
-        // Get updated payment details
-        const updatedPayment = await Payment.findByPk(payment.id, {
-          include: ['paymentMethod'],
-          transaction: t
-        });
-  
-        if (!updatedPayment) {
-          throw new Error('Failed to retrieve updated payment record');
-        }
-  
-        paymentDetails = this.formatPaymentDetails(updatedPayment, response);
-  
-        await t.commit();
-        isTransactionCommitted = true;
-  
-        return {
-          ...response,
-          paymentDetails
-        } as ProcessedPaymentResponse;
-  
-      } catch (error) {
-        // Handle payment processing error
-        const errorState = paymentMethod === 'PSE' ? 'PAYMENT_PENDING' : 'PAYMENT_FAILED';
-        
-        await payment.update({
-          state: 'FAILED',
-          state_description: error instanceof Error ? error.message : 'Payment processing failed',
-          last_attempt_at: new Date(),
-          attempts: payment.attempts + 1
-        }, { transaction: t });
-  
-        await order.update({
-          state: errorState,
-          last_payment_id: payment.id
-        }, { transaction: t });
-  
-        await t.commit();
-        isTransactionCommitted = true;
-  
-        throw error;
+        // For PSE, always use PAYMENT_PENDING
+        orderState = 'PAYMENT_PENDING';
+      } else if (paymentMethod === 'CREDIT_CARD') { 
+        response = await gatewayService.processCreditCardPayment(
+          this.createCardPaymentRequest(order, paymentData as CardPaymentRequestData, orderReference))
+          orderState = this.mapPaymentStatusToOrderState(response.status, paymentMethod);
+      } else {
+        throw new Error(`Unsupported payment method: ${paymentMethod}`);
       }
-  
+      
+      // Update payment record with response
+      await payment.update({
+        transaction_id: response.id,
+        reference: response.gatewayReference || response.id,
+        state: response.status,
+        state_description: this.getPaymentStateDescription(response.status, paymentMethod),
+        gateway_response: JSON.stringify(response.metadata || {}),
+        external_reference: response.gatewayReference,
+        url: response.redirectUrl,
+        metadata: JSON.stringify({
+          payment_method: response.paymentMethod,
+          gateway_info: {
+            provider: gateway,
+            redirect_url: response.redirectUrl,
+            reference: response.gatewayReference,
+            created_at: new Date().toISOString()
+          },
+          ...response.metadata
+        })
+      }, { transaction: t });
+
+      // Update order state
+      await order.update({
+        state: orderState,
+        last_payment_id: payment.id
+      }, { transaction: t });
+
+      // Get updated payment details
+      const updatedPayment = await Payment.findByPk(payment.id, {
+        include: ['paymentMethod'],
+        transaction: t
+      });
+
+      if (!updatedPayment) {
+        throw new Error('Failed to retrieve updated payment record');
+      }
+
+      paymentDetails = this.formatPaymentDetails(updatedPayment, response);
+
+      await t.commit();
+      isTransactionCommitted = true;
+
+      return {
+        ...response,
+        paymentDetails,
+        orderId: order.id.toString(),
+        orderState
+      } as ProcessedPaymentResponse;
+        
     } catch (error) {
       if (!isTransactionCommitted) {
         await t.rollback();
@@ -599,15 +577,15 @@ export class CheckoutService {
     payment: Payment,
     response: PaymentResponse
   ): Promise<void> {
-    const t = await (await import('../config/database')).getSequelize().transaction();
+    const t = await this.sequelize.transaction();
     
     try {
-
       if (!order.paymentMethod) {
         throw new Error('Payment method not configured for order');
       }
   
       const paymentMethod = order.paymentMethod.type;
+      const isPSE = paymentMethod === 'PSE';
 
       // Update payment with gateway response data
       await payment.update({
@@ -617,32 +595,47 @@ export class CheckoutService {
         state_description: this.getPaymentStateDescription(response.status, paymentMethod),
         gateway_response: JSON.stringify(response.metadata || {}),
         external_reference: response.gatewayReference,
-        url: response.redirectUrl, // For PSE payments
+        url: response.redirectUrl,
         metadata: JSON.stringify({
           payment_method: response.paymentMethod,
-          card_info: response.metadata?.card,
-          customer_info: response.metadata?.customer,
           gateway_info: {
-            transaction_date: response.metadata?.operation_date,
-            authorization: response.metadata?.authorization,
-            gateway_reference: response.gatewayReference
-          }
+            provider: payment.gateway,
+            redirect_url: response.redirectUrl,
+            reference: response.gatewayReference,
+            created_at: new Date().toISOString()
+          },
+          ...response.metadata
         }),
         last_attempt_at: new Date()
       }, { transaction: t });
+
+      // For PSE payments, always set order state to PAYMENT_PENDING when status is PENDING
+      const orderState = isPSE && response.status === 'PENDING' 
+        ? 'PAYMENT_PENDING'
+        : this.mapPaymentStatusToOrderState(response.status, paymentMethod);
   
-      // Update order state based on payment status
       await order.update({
-        state: this.mapPaymentStatusToOrderState(response.status, paymentMethod),
+        state: orderState,
         last_payment_id: payment.id
       }, { transaction: t });
   
       await t.commit();
+
+      // Log the state transition
+      this.logStateTransition(
+        order.id,
+        order.state,
+        orderState,
+        paymentMethod,
+        response.status as PaymentState
+      );
+
     } catch (error) {
       await t.rollback();
       throw error;
     }
   }
+
 
   private getPaymentStateDescription(status: PaymentState, paymentMethod: PaymentMethodType): string {
     const descriptions: Record<PaymentMethodType, Record<PaymentState, string>> = {
@@ -714,6 +707,7 @@ export class CheckoutService {
           case 'APPROVED':
             return 'PAYMENT_COMPLETED';
           case 'REJECTED':
+            return 'PAYMENT_FAILED';
           case 'FAILED':
             return 'PAYMENT_FAILED';
           case 'CANCELLED':

@@ -346,9 +346,12 @@ export class OpenPayPaymentGateway extends BasePaymentGateway implements Tokeniz
   }
 
   protected formatPSEResponse(response: OpenPayPSEResponse): PaymentResponse {
+    // Map OpenPay's "in_progress" status to our PENDING state for PSE
+    const mappedStatus = response.status === 'in_progress' ? 'PENDING' : this.mapStatus(response.status);
+
     return {
       id: response.id,
-      status: this.mapStatus(response.status),
+      status: mappedStatus,
       amount: response.amount,
       currency: response.currency,
       paymentMethod: 'PSE',
@@ -414,13 +417,15 @@ export class OpenPayPaymentGateway extends BasePaymentGateway implements Tokeniz
 
   private mapStatus(openPayStatus: string): PaymentState {
     const statusMap: Record<string, PaymentState> = {
-      completed: 'APPROVED',
-      in_progress: 'PENDING',
-      failed: 'REJECTED',
-      cancelled: 'CANCELLED',
-      refunded: 'REFUNDED'
+      'completed': 'APPROVED',
+      'in_progress': 'PENDING', // Explicitly map in_progress to PENDING
+      'failed': 'FAILED',
+      'cancelled': 'CANCELLED',
+      'refunded': 'REFUNDED',
+      'timeout': 'FAILED',
+      'error': 'FAILED'
     };
-    return statusMap[openPayStatus] || 'REJECTED';
+    return statusMap[openPayStatus] || 'PENDING'; // Default to PENDING for PSE
   }
 
   private isOpenPayError(data: unknown): data is OpenPayError {
