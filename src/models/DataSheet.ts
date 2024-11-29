@@ -22,18 +22,18 @@ interface DataSheetAttributes {
 
 
 export class DataSheet extends Model<DataSheetAttributes> {
-  public id!: number;
-  public name!: string;
-  public year!: number;
-  public original!: boolean;
-  public vehicle_version_id!: number | null;
-  public product_id!: number | null;
-  public client_id!: number | null;
-  public product_line_id!: number;
+  declare id: number;
+  declare name: string;
+  declare year: number;
+  declare original: boolean;
+  declare vehicle_version_id: number | null;
+  declare product_id: number | null;
+  declare client_id: number | null;
+  declare product_line_id: number;
 
   // Timestamps
-  public readonly created_at!: Date;
-  public readonly updated_at!: Date;
+  declare readonly created_at: Date;
+  declare readonly updated_at: Date;
 
   // Associations
   //public readonly vehicleVersion?: VehicleVersion;

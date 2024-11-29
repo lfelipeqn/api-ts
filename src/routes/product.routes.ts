@@ -9,9 +9,11 @@ import { Brand } from '../models/Brand';
 import { ProductLine } from '../models/ProductLine';
 import { PriceHistory } from '../models/PriceHistory';
 import multer from 'multer';
-import { Includeable, Op, Sequelize, QueryTypes } from 'sequelize';
+import { Op, Sequelize, QueryTypes, Order} from 'sequelize';
 import { File } from '../models/File';
 import { FileWithDetails, FileWithPrincipal } from '../types/file';
+import { Promotion } from '../models/Promotion';
+import { PromotionProducts } from '../models/PromotionProduct';
 
 
 interface ProductImagesResponse {
@@ -29,15 +31,74 @@ const upload = multer({
   }
 });
 
-router.get('/test', async (req, res) => {
-    try {
-      const count = await Product.count();
-      res.json({ message: 'Product routes working', productCount: count });
-    } catch (error:any) {
-      console.error('Error in test route:', error);
-      res.status(500).json({ error: 'Database error', message: error.message });
+const getActivePromotionConditions = () => ({
+  state: 'ACTIVE' as const,
+  [Op.and]: [
+    {
+      [Op.or]: [
+        { start_date: { [Op.is]: null } },
+        { start_date: { [Op.lte]: Sequelize.fn('NOW') } }
+      ]
+    },
+    {
+      [Op.or]: [
+        { end_date: { [Op.is]: null } },
+        { end_date: { [Op.gte]: Sequelize.fn('NOW') } }
+      ]
     }
+  ]
 });
+
+const getProductPricing = async (productId: number) => {
+  const latestPrice = await PriceHistory.findOne({
+    where: { product_id: productId },
+    order: [['created_at', 'DESC']]
+  });
+
+  const basePrice = latestPrice ? Number(latestPrice.price) : 0;
+
+  // Get active promotions for this product
+  const activePromotions = await Promotion.findAll({
+    where: getActivePromotionConditions(),
+    include: [{
+      model: Product,
+      as: 'products',
+      where: { id: productId },
+      required: true,
+      through: { attributes: [] }
+    }],
+    order: [['created_at', 'DESC']]
+  });
+
+  let discountedPrice = basePrice;
+  let discountAmount = 0;
+  let appliedPromotion = null;
+
+  if (activePromotions.length > 0) {
+    const promotion = activePromotions[0];
+    if (promotion.type === 'PERCENTAGE') {
+      discountAmount = (basePrice * promotion.discount) / 100;
+    } else {
+      discountAmount = promotion.discount;
+    }
+    discountedPrice = Math.max(0, basePrice - discountAmount);
+
+    appliedPromotion = {
+      id: promotion.id,
+      name: promotion.name,
+      type: promotion.type,
+      discount: promotion.discount
+    };
+  }
+
+  return {
+    base_price: basePrice,
+    discounted_price: discountedPrice,
+    discount_amount: discountAmount,
+    has_discount: discountAmount > 0,
+    active_promotion: appliedPromotion
+  };
+};
 
 // Get product list with pagination and search
 router.get('/products', async (req, res) => {
@@ -51,8 +112,7 @@ router.get('/products', async (req, res) => {
     } = req.query;
 
     const offset = (Number(page) - 1) * Number(limit);
-
-    // Create the where clause for the main product search
+    
     const where: any = {
       state: true,
       [Op.or]: [
@@ -66,7 +126,6 @@ router.get('/products', async (req, res) => {
     if (brandId) where.brand_id = brandId;
     if (productLineId) where.product_line_id = productLineId;
 
-    // First get the products
     const results = await Product.findAndCountAll({
       where,
       limit: Number(limit),
@@ -74,64 +133,63 @@ router.get('/products', async (req, res) => {
       include: [
         { 
           model: Brand, 
-          as: 'brand' 
+          as: 'brand',
+          include: [{
+            model: File,
+            as: 'file',
+            required: false
+          }]
         },
-        { 
-          model: ProductLine, 
-          as: 'productLine' 
-        }
+        { model: ProductLine, as: 'productLine' }
       ],
       order: [['created_at', 'DESC']]
     });
 
-    // Get the product IDs from the results
-    const productIds = results.rows.map(product => product.id);
+    // Process products with pricing info and additional details
+    const processedProducts = await Promise.all(
+      results.rows.map(async (product) => {
+        // Get pricing info
+        const pricingInfo = await getProductPricing(product.id);
+        
+        // Get product images
+        const files = await File.getByProductId(product.id);
+        const fileInstance = new File();
+        const processedImages = await Promise.all(
+          files.map(file => fileInstance.processFileDetails(file))
+        );
+        const principalImage = processedImages.find(img => img.products_files?.principal);
 
-    // If we have products, get their latest prices
-    let latestPrices: any[] = [];
-    if (productIds.length > 0) {
-      // Get the latest price history for each product using a raw query
-      latestPrices = await Product.sequelize!.query(`
-        SELECT ph.*
-        FROM price_histories ph
-        INNER JOIN (
-          SELECT product_id, MAX(created_at) as max_created_at
-          FROM price_histories
-          WHERE product_id IN (:productIds)
-          GROUP BY product_id
-        ) latest ON ph.product_id = latest.product_id 
-        AND ph.created_at = latest.max_created_at
-      `, {
-        replacements: { productIds },
-        type: QueryTypes.SELECT
-      });
-    }
+        // Get total stock
+        const totalStock = await product.getTotalStock();
 
-    // Create a map of product_id to latest price info for quick lookup
-    const priceMap = new Map(
-      latestPrices.map(price => [price.product_id, price])
+        // Process brand image if available
+        let brandWithImage = null;
+        if (product.brand) {
+          const brand = await Brand.findByPk(product.brand.id);
+          if (brand) {
+            brandWithImage = await brand.toDetailedJSON();
+          }
+        }
+
+        return {
+          ...product.toJSON(),
+          ...pricingInfo,
+          brand: brandWithImage,
+          principalImage: principalImage?.url,
+          total_stock: totalStock
+        };
+      })
     );
 
-    // Transform the results to include price information
-    const transformedRows = results.rows.map(product => {
-      const latestPrice = priceMap.get(product.id);
-      const productJson = product.toJSON();
-      
-      return {
-        ...productJson,
-        price: latestPrice ? parseFloat(latestPrice.price) : 0,
-        unit_cost: latestPrice ? parseFloat(latestPrice.unit_cost) : 0
-      };
-    });
-
     res.json({
-      data: transformedRows,
+      data: processedProducts,
       meta: {
         total: results.count,
         page: Number(page),
         lastPage: Math.ceil(results.count / Number(limit))
       }
     });
+
   } catch (error) {
     console.error('Error fetching products:', error);
     res.status(500).json({ 
@@ -145,48 +203,37 @@ router.get('/products', async (req, res) => {
 // Update the get product route with better error handling and logging
 router.get('/products/:id', async (req, res, next) => {
   try {
-    console.log(`Fetching product with id: ${req.params.id}`);
-    
-    const includeOptions = [
-      {
-        model: DataSheet,
-        as: 'dataSheets',
-        required: false,
-        include: [
-          {
+    const product = await Product.findByPk(req.params.id, {
+      include: [
+        {
+          model: DataSheet,
+          as: 'dataSheets',
+          required: false,
+          include: [{
             model: DataSheetField,
             as: 'dataSheetFields',
             through: {
-              model: DataSheetValue,
-              as: 'DataSheetValue',
-              attributes: ['value']
+              attributes: ['value']  // Just specify the attributes we want from the junction table
             }
-          }
-        ]
-      },
-      { 
-        model: Brand, 
-        as: 'brand' 
-      },
-      { 
-        model: ProductLine, 
-        as: 'productLine' 
-      }
-    ];
-
-    const product = await Product.findByPk(req.params.id, {
-      include: includeOptions,
-      logging: console.log // To see the generated SQL query
+          }]
+        },
+        { 
+          model: Brand, 
+          as: 'brand' 
+        },
+        { 
+          model: ProductLine, 
+          as: 'productLine' 
+        }
+      ]
     });
 
     if (!product) {
-      console.log(`Product not found with id: ${req.params.id}`);
       return res.status(404).json({ error: 'Product not found' });
     }
 
-    console.log(`Found product: ${product.id}`);
     const productInfo = await product.getInfo();
-
+    const pricingInfo = await getProductPricing(product.id);
     const dataSheet = product.dataSheets && product.dataSheets[0];
 
     const dataSheetInfo = dataSheet ? {
@@ -203,6 +250,7 @@ router.get('/products/:id', async (req, res, next) => {
 
     const response = {
       ...productInfo,
+      ...pricingInfo,
       data_sheet: dataSheetInfo
     };
 
@@ -504,6 +552,110 @@ router.post('/products/:id/price', async (req, res) => {
   } catch (error) {
     console.error('Error updating price:', error);
     res.status(500).json({ error: 'Failed to update price' });
+  }
+});
+
+router.get('/products/:id/similar', async (req, res) => {
+  try {
+    const product = await Product.findByPk(req.params.id);
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    const similarProducts = await Product.findAll({
+      where: {
+        reference: product.reference,
+        id: { [Op.ne]: product.id },
+        state: true
+      },
+      limit: 4,
+      include: [
+        { model: Brand, as: 'brand' },
+        { model: ProductLine, as: 'productLine' }
+      ]
+    });
+
+    res.json({
+      status: 'success',
+      data: similarProducts
+    });
+  } catch (error) {
+    console.error('Error fetching similar products:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch similar products',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+router.get('/products/:id/prices', async (req, res) => {
+  try {
+    const product = await Product.findByPk(req.params.id);
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    const latestPrice = await PriceHistory.findOne({
+      where: { product_id: product.id },
+      order: [['created_at', 'DESC']]
+    });
+
+    const basePrice = latestPrice ? Number(latestPrice.price) : 0;
+
+    // Get all active promotions for this product
+    const activePromotions = await Promotion.findAll({
+      where: getActivePromotionConditions(),
+      include: [{
+        model: Product,
+        as: 'products',
+        where: { id: product.id },
+        required: true,
+        through: { attributes: [] }
+      }],
+      order: [['created_at', 'DESC']]
+    });
+
+    let discountedPrice = basePrice;
+    let discountAmount = 0;
+    let appliedPromotion = null;
+
+    if (activePromotions.length > 0) {
+      const promotion = activePromotions[0];
+      if (promotion.type === 'PERCENTAGE') {
+        discountAmount = (basePrice * promotion.discount) / 100;
+      } else {
+        discountAmount = promotion.discount;
+      }
+      discountedPrice = Math.max(0, basePrice - discountAmount);
+
+      appliedPromotion = {
+        id: promotion.id,
+        name: promotion.name,
+        type: promotion.type,
+        discount: promotion.discount,
+        start_date: promotion.start_date,
+        end_date: promotion.end_date
+      };
+    }
+
+    res.json({
+      product_id: product.id,
+      base_price: basePrice,
+      discounted_price: discountedPrice,
+      discount_amount: discountAmount,
+      has_discount: discountAmount > 0,
+      applied_promotion: appliedPromotion,
+      all_active_promotions: activePromotions.map(p => ({
+        id: p.id,
+        name: p.name,
+        type: p.type,
+        discount: p.discount
+      }))
+    });
+
+  } catch (error) {
+    console.error('Error getting product prices:', error);
+    res.status(500).json({ error: 'Failed to get product prices' });
   }
 });
 

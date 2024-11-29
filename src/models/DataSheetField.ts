@@ -4,17 +4,17 @@ import { DataSheet } from './DataSheet';
 import { DataSheetFieldBase } from '../types/models';
 
 export class DataSheetField extends Model<DataSheetFieldBase> {
-  public id!: number;
-  public field_name!: string;
-  public type!: string;
-  public values!: string | null;
-  public use_to_filter!: boolean;
-  public use_to_compare!: boolean;
-  public product_line_id!: number;
+  declare id: number;
+  declare field_name: string;
+  declare type: string;
+  declare values: string | null;
+  declare use_to_filter: boolean;
+  declare use_to_compare: boolean;
+  declare product_line_id: number;
 
   // Timestamps
-  public readonly created_at!: Date;
-  public readonly updated_at!: Date;
+  declare readonly created_at: Date;
+  declare readonly updated_at: Date;
 
   // Associations
   public readonly productLine?: ProductLine;

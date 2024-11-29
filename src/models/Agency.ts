@@ -10,6 +10,7 @@ import {
 } from 'sequelize';
 import { Address } from './Address';
 import { Product } from './Product';
+import { City } from './City';
 //import { Order } from './Order';
 //import { ComplementaryAgency } from './ComplementaryAgency';
 //import { PriceHistory } from './PriceHistory';
@@ -29,17 +30,17 @@ interface AgencyAttributes {
 }
 
 export class Agency extends Model<AgencyAttributes> {
-  public id!: number;
-  public magister_cellar!: string;
-  public document_prefix!: string;
-  public number!: string;
-  public cell_phone_number!: string;
-  public business_hours!: string;
-  public state!: string;
-  public address_id!: number;
+  declare id: number;
+  declare magister_cellar: string;
+  declare document_prefix: string;
+  declare number: string;
+  declare cell_phone_number: string;
+  declare business_hours: string;
+  declare state: string;
+  declare address_id: number;
 
-  public readonly created_at!: Date;
-  public readonly updated_at!: Date;
+  declare readonly created_at: Date;
+  declare readonly updated_at: Date;
 
   // Associations
   public readonly address?: Address;
@@ -89,8 +90,8 @@ export class Agency extends Model<AgencyAttributes> {
         type: DataTypes.INTEGER.UNSIGNED,
         allowNull: false,
       },
-      created_at: '',
-      updated_at: ''
+      created_at: DataTypes.DATE,
+      updated_at: DataTypes.DATE
     }, {
       sequelize,
       tableName: 'agencies',
@@ -104,7 +105,11 @@ export class Agency extends Model<AgencyAttributes> {
   static associate(models: {
     Address: typeof Address;
     Product: typeof Product;
-  }) {
+  }): void {
+    if (!models.Address || !models.Product) {
+      throw new Error('Required models not provided to Agency.associate');
+    }
+
     Agency.belongsTo(models.Address, { 
       foreignKey: 'address_id', 
       as: 'address' 

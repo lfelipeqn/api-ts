@@ -115,7 +115,7 @@ export class ProductLine extends Model<ProductLineAttributes, ProductLineCreatio
     });
 
     ProductLine.belongsToMany(models.Brand, {
-      through: 'brand_product_lines',
+      through: 'brands_product_lines',
       foreignKey: 'product_line_id',
       otherKey: 'brand_id',
       as: 'brands'

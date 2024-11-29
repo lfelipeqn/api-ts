@@ -2,12 +2,11 @@ import { Model, DataTypes, Sequelize, Association } from 'sequelize';
 import { Department } from './Department';
 
 export class City extends Model {
-  public id!: number;
-  public name!: string;
-  public enabled_for_orders!: boolean;
-  public payment_against_delivery_enabled!: boolean;
-  public department_id!: number;
-
+  declare id: number;
+  declare name: string;
+  declare enabled_for_orders: boolean;
+  declare payment_against_delivery_enabled: boolean;
+  declare department_id: number;
   // Associations
   public readonly department?: Department;
 

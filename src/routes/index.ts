@@ -8,6 +8,7 @@ import cartRoutes from './cart.routes';
 import paymentConfigRoutes from './payment-config.routes';
 import paymentRoutes from './payment.routes';
 import checkoutRoutes from './checkout.routes';
+import webRoutes from './web.routes';
 
 const router = Router();
 
@@ -19,6 +20,7 @@ router.use('/redis', redisRoutes);
 router.use('/api', apiRouter);
 
 // Add routes to API router
+apiRouter.use('/',webRoutes);
 apiRouter.use('/auth', authRoutes);
 apiRouter.use('/', productRoutes); // This will preserve existing product routes under /api
 apiRouter.use('/', cartRoutes);

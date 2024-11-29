@@ -9,6 +9,8 @@ import {
 import { Product } from './Product';
 import { ProductLine } from './ProductLine';
 import { File } from './File';
+import { FileWithDetails, ImageSizes } from '../types/file';
+
 
 // Interfaces
 interface BrandAttributes {
@@ -29,6 +31,13 @@ interface BrandUpdate {
   for_products?: boolean;
   productLines?: ProductLine[] | number[];
   file?: Express.Multer.File;
+}
+
+interface BrandWithImage extends BrandAttributes {
+  image?: {
+    url: string;
+    sizes?: ImageSizes;
+  };
 }
 
 export class Brand extends Model<BrandAttributes, BrandCreationAttributes> {
@@ -78,6 +87,8 @@ export class Brand extends Model<BrandAttributes, BrandCreationAttributes> {
         type: DataTypes.INTEGER.UNSIGNED,
         allowNull: true,
       },
+      created_at: DataTypes.DATE,
+      updated_at: DataTypes.DATE
     }, {
       sequelize,
       tableName: 'brands',
@@ -91,12 +102,43 @@ export class Brand extends Model<BrandAttributes, BrandCreationAttributes> {
   static associate(models: any) {
     Brand.hasMany(models.Product, { foreignKey: 'brand_id', as: 'products' });
     Brand.belongsToMany(models.ProductLine, {
-      through: 'brand_product_lines',
+      through: 'brands_product_lines',
       foreignKey: 'brand_id',
       otherKey: 'product_line_id',
       as: 'productLines'
     });
     Brand.belongsTo(models.File, { foreignKey: 'file_id', as: 'file' });
+  }
+
+  async getImageDetails(): Promise<{ url: string; sizes: ImageSizes } | null> {
+    if (!this.file_id) return null;
+
+    const file = await File.findByPk(this.file_id);
+    if (!file) return null;
+
+    const fileInstance = new File();
+    const processedFile = await fileInstance.processFileDetails({
+      id: file.id,
+      name: file.name,
+      location: file.location,
+      created_at: file.created_at,
+      updated_at: file.updated_at,
+      products_files: { principal: true }
+    });
+
+    return {
+      url: processedFile.url,
+      sizes: processedFile.sizes
+    };
+  }
+
+  async toDetailedJSON(): Promise<BrandWithImage> {
+    const imageDetails = await this.getImageDetails();
+    
+    return {
+      ...this.toJSON(),
+      image: imageDetails || undefined
+    };
   }
 
   // Methods

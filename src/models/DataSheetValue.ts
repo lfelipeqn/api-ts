@@ -10,12 +10,12 @@ interface DataSheetValueAttributes {
 }
 
 export class DataSheetValue extends Model<DataSheetValueAttributes> {
-  public id!: number;
-  public data_sheet_id!: number;
-  public data_sheet_field_id!: number;
-  public value!: string;
-  public readonly created_at!: Date;
-  public readonly updated_at!: Date;
+  declare id: number;
+  declare data_sheet_id: number;
+  declare data_sheet_field_id: number;
+  declare value: string;
+  declare readonly created_at: Date;
+  declare readonly updated_at: Date;
 
   static initModel(sequelize: Sequelize): typeof DataSheetValue {
     DataSheetValue.init({
