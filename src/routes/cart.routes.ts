@@ -89,7 +89,6 @@ const getOrCreateCart = async (req: CartRequest & AuthenticatedRequest, res: Res
     const sessionManager = CartSessionManager.getInstance();
     let sessionId = req.headers['x-cart-session'] as string;
     const userId = req.user?.id;
-    let cart = null;
 
     console.log('Cart middleware debug info:', { 
       userId,
@@ -102,15 +101,29 @@ const getOrCreateCart = async (req: CartRequest & AuthenticatedRequest, res: Res
 
     transaction = await sequelize.transaction();
 
-    try {
-      // Priority 1: Get authenticated user's active cart by userId
-      if (userId) {
-        console.log('Looking for user cart with ID:', userId);
-        
-        cart = await Cart.findOne({
+    let cart = null;
+
+    // Priority 1: For authenticated users, first try to find their active cart
+    if (userId) {
+      cart = await Cart.findOne({
+        where: {
+          user_id: userId,
+          status: 'active'
+        },
+        include: [{
+          model: CartDetail,
+          as: 'details'
+        }],
+        transaction
+      });
+
+      // If guest cart exists and user just logged in, handle merging
+      if (sessionId && !cart) {
+        const guestCart = await Cart.findOne({
           where: {
-            user_id: userId,
-            status: 'active' as CartStatus
+            session_id: sessionId,
+            status: 'active',
+            user_id: null
           },
           include: [{
             model: CartDetail,
@@ -118,126 +131,95 @@ const getOrCreateCart = async (req: CartRequest & AuthenticatedRequest, res: Res
           }],
           transaction
         });
-        
-        console.log('User cart lookup result:', {
-          found: !!cart,
-          cartId: cart?.id,
-          cartSessionId: cart?.session_id
-        });
 
-        // If authenticated user has no cart and it's a cart-modifying request, create one
-        if (!cart && req.method !== 'GET') {
-          // Generate session ID if needed
-          sessionId = sessionManager.generateSessionId();
-          console.log('Creating new cart for authenticated user:', { userId, sessionId });
-
-          cart = await Cart.create({
+        if (guestCart) {
+          // Convert guest cart to user cart
+          await guestCart.update({
             user_id: userId,
-            session_id: sessionId,
-            status: 'active' as CartStatus,
             expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
           }, { transaction });
 
-          await sessionManager.createSession(cart.id, userId, sessionId);
-          res.set('X-Cart-Session', sessionId);
+          cart = guestCart;
           
-          console.log('Created new cart for authenticated user:', { 
-            cartId: cart.id, 
-            sessionId: cart.session_id 
+          // Update the session in Redis
+          await sessionManager.updateSession(sessionId, {
+            cart_id: cart.id,
+            user_id: userId,
+            expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
           });
         }
-
-        if (cart) {
-          sessionId = cart.session_id;
-          res.set('X-Cart-Session', sessionId);
-          
-          // Ensure Redis session exists
-          const redisSession = await sessionManager.getSession(sessionId);
-          if (!redisSession) {
-            await sessionManager.createSession(cart.id, userId, sessionId);
-          }
-        }
       }
-
-      // Priority 2: Get active cart by session if no user cart found
-      if (!cart && sessionId) {
-        console.log('Looking for cart by session ID:', sessionId);
-        
-        cart = await Cart.findOne({
-          where: {
-            session_id: sessionId,
-            status: 'active' as CartStatus
-          },
-          include: [{
-            model: CartDetail,
-            as: 'details'
-          }],
-          transaction
-        });
-        
-        console.log('Session cart lookup result:', {
-          found: !!cart,
-          cartId: cart?.id
-        });
-      }
-
-      // For guest users or when no cart exists
-      if (!cart && req.method !== 'GET') {
-        // Generate new session ID if needed
-        if (!sessionId) {
-          sessionId = sessionManager.generateSessionId();
-        }
-
-        console.log('Creating new cart:', { userId, sessionId });
-
-        cart = await Cart.create({
-          user_id: userId || null,
-          session_id: sessionId,
-          status: 'active' as CartStatus,
-          expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
-        }, { transaction });
-
-        await sessionManager.createSession(cart.id, userId, sessionId);
-        res.set('X-Cart-Session', sessionId);
-        
-        console.log('Created new cart:', { cartId: cart.id });
-      }
-
-      await transaction.commit();
-      req.cart = cart;
-
-      // For GET requests with no cart, return empty response
-      if (!cart && req.method === 'GET') {
-        return res.json({
-          status: 'success',
-          data: {
-            session_id: sessionId || '',
-            total: 0,
-            subtotal: 0,
-            totalDiscount: 0,
-            items: []
-          }
-        });
-      }
-
-      next();
-    } catch (error) {
-      console.error('Error in cart middleware transaction:', error);
-      await transaction.rollback();
-      throw error;
     }
+
+    // Priority 2: For guest users or if no user cart found, try to find cart by session
+    if (!cart && sessionId) {
+      cart = await Cart.findOne({
+        where: {
+          session_id: sessionId,
+          status: 'active'
+        },
+        include: [{
+          model: CartDetail,
+          as: 'details'
+        }],
+        transaction
+      });
+    }
+
+    // Create new cart if needed and it's not a GET request
+    if (!cart && req.method !== 'GET') {
+      // Generate new session ID for guest users if needed
+      if (!userId && !sessionId) {
+        sessionId = sessionManager.generateSessionId();
+      }
+
+      cart = await Cart.create({
+        user_id: userId || null,
+        session_id: sessionId,
+        status: 'active',
+        expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
+      }, { transaction });
+
+      await sessionManager.createSession(cart.id, userId, sessionId);
+      console.log('Created new cart:', { cartId: cart.id, sessionId: cart.session_id });
+    }
+
+    // Always send session ID in response header if we have a cart
+    if (cart) {
+      res.set('X-Cart-Session', cart.session_id);
+    }
+
+    await transaction.commit();
+    req.cart = cart;
+
+    // For GET requests with no cart, return empty response with session ID if available
+    if (!cart && req.method === 'GET') {
+      return res.json({
+        status: 'success',
+        data: {
+          session_id: sessionId || '',
+          total: 0,
+          subtotal: 0,
+          totalDiscount: 0,
+          items: []
+        }
+      });
+    }
+
+    // Ensure Redis session exists
+    if (cart) {
+      await sessionManager.ensureSession(cart.id, cart.session_id, cart.user_id);
+    }
+
+    next();
   } catch (error) {
     if (transaction) {
-      try {
-        await transaction.rollback();
-      } catch (rollbackError) {
-        console.error('Error rolling back transaction:', rollbackError);
-      }
+      await transaction.rollback();
     }
     console.error('Error in getOrCreateCart middleware:', error);
     res.status(500).json({
       status: 'error',
-      message: 'Failed to create cart',
+      message: 'Failed to process cart',
       details: error instanceof Error ? error.message : 'Unknown error'
     });
   }
