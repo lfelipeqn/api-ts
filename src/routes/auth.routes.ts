@@ -44,7 +44,6 @@ router.post('/login', validateRequest(loginSchema), async (req: Request, res: Re
     const { email, password } = req.body;
     const { User } = getModels();
 
-    // Find user by email
     const user = await User.findOne({
       where: { email },
       include: [{
@@ -53,35 +52,19 @@ router.post('/login', validateRequest(loginSchema), async (req: Request, res: Re
       }]
     });
 
-    if (!user) {
+    if (!user || !user.isActive() || !(await user.verifyPassword(password))) {
       return res.status(401).json({
         status: 'error',
         message: 'Invalid credentials'
       });
     }
 
-    // Verify user state
-    if (!user.isActive()) {
-      return res.status(403).json({
-        status: 'error',
-        message: 'Account is not active',
-        state: user.state
-      });
-    }
+    // Invalidate all existing sessions for this user
+    const sessionManager = UserSessionManager.getInstance();
+    await sessionManager.destroyUserSessions(user.id);
 
-    // Verify password
-    const isValidPassword = await user.verifyPassword(password);
-    if (!isValidPassword) {
-      return res.status(401).json({
-        status: 'error',
-        message: 'Invalid credentials'
-      });
-    }
-
-    // Create session
+    // Create new session
     const sessionId = await user.createSession();
-
-    // Get full user info
     const userInfo = await user.getInfo();
 
     res.status(200).json({
