@@ -421,6 +421,105 @@ router.post('/process-payment/:orderId', async (req: AuthenticatedRequest, res: 
   }
 });
 
+// Add this route to checkout.routes.ts after the existing imports
+
+router.get('/:sessionId/status', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { sessionId } = req.params;
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({
+        status: 'error',
+        message: 'Authentication required'
+      });
+    }
+
+    const session = await checkoutService.getSession(sessionId);
+
+    if (!session) {
+      return res.json({
+        status: 'success',
+        data: {
+          isValid: false,
+          status: 'NOT_FOUND',
+          message: 'Checkout session not found'
+        }
+      });
+    }
+
+    // Verify session belongs to authenticated user
+    if (session.user_id !== userId) {
+      return res.json({
+        status: 'success',
+        data: {
+          isValid: false,
+          status: 'UNAUTHORIZED',
+          message: 'Session does not belong to current user'
+        }
+      });
+    }
+
+    // Check if session is expired
+    const now = new Date();
+    const isExpired = session.expires_at < now;
+
+    // Get cart to check if it's still valid
+    const cart = await Cart.findByPk(session.cart_id);
+    const isCartActive = cart?.status === 'active';
+
+    if (isExpired) {
+      return res.json({
+        status: 'success',
+        data: {
+          isValid: false,
+          status: 'EXPIRED',
+          message: 'Checkout session has expired',
+          expiredAt: session.expires_at
+        }
+      });
+    }
+
+    if (!isCartActive) {
+      return res.json({
+        status: 'success',
+        data: {
+          isValid: false,
+          status: 'INVALID_CART',
+          message: 'Associated cart is no longer active'
+        }
+      });
+    }
+
+    // Session is valid, return complete status
+    return res.json({
+      status: 'success',
+      data: {
+        isValid: true,
+        status: 'ACTIVE',
+        session: {
+          id: session.id,
+          cart_id: session.cart_id,
+          delivery_type: session.delivery_type,
+          delivery_address_id: session.delivery_address_id,
+          pickup_agency_id: session.pickup_agency_id,
+          payment_method_id: session.payment_method_id,
+          created_at: session.created_at,
+          expires_at: session.expires_at
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Error validating checkout session:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to validate checkout session',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
 router.use(checkoutErrorHandler);
 
 export default router;

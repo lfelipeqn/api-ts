@@ -9,6 +9,7 @@ import paymentConfigRoutes from './payment-config.routes';
 import paymentRoutes from './payment.routes';
 import checkoutRoutes from './checkout.routes';
 import webRoutes from './web.routes';
+import accountRoutes from './account.routes';
 
 const router = Router();
 
@@ -27,6 +28,7 @@ apiRouter.use('/', cartRoutes);
 apiRouter.use('/payments-config', paymentConfigRoutes);
 apiRouter.use('/payments', paymentRoutes);
 apiRouter.use('/checkout', checkoutRoutes);
+apiRouter.use('/account', accountRoutes);
 
 // Global error handler - this should be the last middleware
 apiRouter.use((err: any, req: Request, res: Response, next: NextFunction) => {
