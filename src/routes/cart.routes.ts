@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { CartSessionManager } from '../services/CartSessionManager';
 import { getModels, getSequelize } from '../config/database';
-import { Transaction } from 'sequelize';
+import { Transaction, Op } from 'sequelize';
 import { CartStatus } from '../types/cart';
 import { UserSessionManager } from '../services/UserSessionManager';
 import { CartDetail } from '../models/CartDetail';
@@ -623,117 +623,107 @@ router.delete('/cart/items/:product_id',
 
 router.post('/cart/merge',
   authMiddleware,
-  getOrCreateCart,
-  async (req: CartRequest & AuthenticatedRequest, res: Response) => {
-    const { Cart } = getModels();
+  async (req: AuthenticatedRequest, res: Response) => {
+    const { Cart, CartDetail } = getModels();
     const sequelize = getSequelize();
     let transaction: Transaction | undefined;
     const sessionManager = CartSessionManager.getInstance();
 
     try {
-      const userId = req.user.id;
-      const guestSessionId = req.headers['x-cart-session'] as string;
+      const userId = req.user?.id;
+      if (!userId) {
+        return res.status(401).json({
+          status: 'error',
+          message: 'Authentication required'
+        });
+      }
 
+      const guestSessionId = req.headers['x-cart-session'] as string;
       if (!guestSessionId) {
         return res.status(400).json({
           status: 'error',
-          message: 'No guest cart to merge'
+          message: 'No guest cart session provided'
+        });
+      }
+
+      const cartSession = await sessionManager.getSession(guestSessionId);
+      if (!cartSession) {
+        return res.status(404).json({
+          status: 'error',
+          message: 'Invalid cart session'
         });
       }
 
       transaction = await sequelize.transaction();
 
-      // Find both guest and user carts
-      const [guestCart, userCart] = await Promise.all([
-        Cart.findOne({
-          where: {
-            session_id: guestSessionId,
-            status: 'active' as CartStatus
-          },
-          include: ['details'],
-          transaction
-        }),
-        Cart.findOne({
-          where: {
-            user_id: userId,
-            status: 'active' as CartStatus
-          },
-          include: ['details'],
-          transaction
-        })
-      ]);
+      // Find guest cart 
+      const guestCart = await Cart.findOne({
+        where: {
+          id: cartSession.cart_id,
+          status: 'active'
+        },
+        include: [{
+          model: CartDetail,
+          as: 'details'
+        }],
+        transaction,
+        lock: true // Add lock to prevent race conditions
+      });
 
       if (!guestCart) {
-        await transaction.commit();
+        await transaction.rollback();
         return res.status(404).json({
           status: 'error',
           message: 'Guest cart not found'
         });
       }
 
-      let finalCart;
-
-      if (userCart) {
-        // Merge guest cart items into user cart
-        if (guestCart.details?.length) {
-          for (const detail of guestCart.details) {
-            await CartDetail.addToCart(
-              userCart.id,
-              detail.product_id,
-              detail.quantity,
-              transaction
-            );
-          }
+      // Find and update existing user cart to abandoned
+      await Cart.update(
+        { status: 'abandoned' },
+        { 
+          where: { 
+            user_id: userId,
+            status: 'active',
+            id: { [Op.ne]: guestCart.id } // Don't update the guest cart
+          },
+          transaction 
         }
+      );
 
-        // Mark guest cart as abandoned
-        await guestCart.update({
-          status: 'abandoned' as CartStatus
-        }, { transaction });
+      // Update guest cart with user ID while keeping active status
+      await guestCart.update({
+        user_id: userId,
+        status: 'active', // Explicitly set status to remain active
+        expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
+      }, { 
+        transaction,
+        fields: ['user_id', 'status', 'expires_at'] // Only update these fields
+      });
 
-        // Delete guest cart session
-        await sessionManager.deleteSession(guestSessionId);
-
-        finalCart = userCart;
-      } else {
-        // Simply update the guest cart with user information
-        await guestCart.update({
-          user_id: userId,
-          expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
-        }, { transaction });
-
-        // Update session in Redis
-        await sessionManager.updateSession(guestSessionId, {
-          cart_id: guestCart.id,
-          user_id: userId,
-          expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
-        });
-
-        finalCart = guestCart;
-      }
+      // Update Redis session
+      await sessionManager.updateSession(guestSessionId, {
+        cart_id: guestCart.id,
+        user_id: userId,
+        created_at: new Date(),
+        expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
+      });
 
       await transaction.commit();
 
-      const summary = await finalCart.getSummary();
+      const summary = await guestCart.getSummary();
 
-      return res.json({
+      res.json({
         status: 'success',
         data: {
-          session_id: finalCart.session_id,
+          session_id: guestCart.session_id,
           ...summary
         }
       });
 
     } catch (error) {
-      console.error('Error merging carts:', error);
-      try {
-        if (transaction) {
-          await transaction.rollback();
-        }
-      } catch (rollbackError) {
-        console.error('Error rolling back transaction:', rollbackError);
-      }
-      
+      if (transaction) await transaction.rollback();
+      console.error('Cart merge error:', error);
       res.status(500).json({
         status: 'error',
         message: 'Failed to merge carts'

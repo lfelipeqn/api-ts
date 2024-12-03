@@ -31,6 +31,14 @@ export const authMiddleware = async (
 
     const sessionManager = UserSessionManager.getInstance();
     const cartSessionManager = CartSessionManager.getInstance();
+
+    // Add debug logging
+    console.log('Auth Debug:', {
+      sessionToken,
+      cartSessionId,
+      headers: req.headers
+    });
+    
     const session = await sessionManager.getSession(sessionToken);
 
     if (!session) {
@@ -79,22 +87,27 @@ export const authMiddleware = async (
         });
 
         if (userCart) {
-          // Merge guest cart items into user cart
-          for (const detail of guestCart.details || []) {
-            await CartDetail.addToCart(
-              userCart.id,
-              detail.product_id,
-              detail.quantity
-            );
-          }
-          await guestCart.update({ status: 'abandoned' as CartStatus });
-          await cartSessionManager.deleteSession(cartSessionId);
+          // Mark user's existing cart as abandoned
+          await userCart.update({ status: 'abandoned' as CartStatus });
+           // Convert guest cart to user cart while keeping it active
+           await guestCart.update({
+            user_id: user.id,
+            expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
+          });
+
+          // Update cart session
+          await cartSessionManager.updateSession(cartSessionId, {
+            cart_id: guestCart.id,
+            user_id: user.id,
+            expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
+          });
         } else {
-          // Convert guest cart to user cart
+          // Just assign guest cart to user
           await guestCart.update({
             user_id: user.id,
             expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
           });
+
           await cartSessionManager.updateSession(cartSessionId, {
             cart_id: guestCart.id,
             user_id: user.id,
