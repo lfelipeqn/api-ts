@@ -8,6 +8,8 @@ import { Department } from '../models/Department';
 import { City } from '../models/City';
 import { Address } from '../models/Address';
 import { File } from '../models/File';
+import { PaymentMethodConfig } from '../models/PaymentMethodConfig';
+import { GatewayConfig } from '../models/GatewayConfig';
 
 const router = Router();
 const sequelize = getSequelize();
@@ -320,6 +322,42 @@ router.get('/departments/:id/cities', async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: error instanceof Error ? error.message : 'Error fetching cities'
+    });
+  }
+});
+
+router.get('/payment-methods', async (req, res) => {
+  try {
+    const methods = await PaymentMethodConfig.findAll({
+      where: { enabled: true },
+      include: [{
+        model: GatewayConfig,
+        as: 'gatewayConfig',
+        where: { is_active: true },
+        attributes: [], // Exclude gateway details
+        required: true
+      }],
+      attributes: [
+        'id', 
+        'type',
+        'name',
+        'description',
+        'min_amount',
+        'max_amount'
+      ],
+      order: [['name', 'ASC']]
+    });
+
+    res.json({
+      status: 'success',
+      data: methods
+    });
+
+  } catch (error) {
+    console.error('Error fetching payment methods:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to fetch payment methods'
     });
   }
 });
