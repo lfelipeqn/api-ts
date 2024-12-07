@@ -387,16 +387,7 @@ router.post('/cards/tokens',
         res.json({
           status: 'success',
           data: {
-            token_id: tokenResponse.id,
-            card: {
-              brand: tokenResponse.card.brand,
-              type: tokenResponse.card.type,
-              bank_name: tokenResponse.card.bank_name,
-              holder_name: tokenResponse.card.holder_name,
-              last_digits: tokenResponse.card.card_number.slice(-4),
-              expiration_month: tokenResponse.card.expiration_month,
-              expiration_year: tokenResponse.card.expiration_year
-            }
+            token_id: tokenResponse.id
           }
         });
       }catch(error){

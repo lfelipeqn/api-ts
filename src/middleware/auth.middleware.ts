@@ -2,15 +2,15 @@
 
 import { Request, Response, NextFunction } from 'express';
 import { UserSessionManager } from '../services/UserSessionManager';
+import { CartSessionManager } from '../services/CartSessionManager';
 import { getModels } from '../config/database';
 import { User } from '../models/User';
-import { CartSessionManager } from '../services/CartSessionManager';
 import { CartStatus } from '../types/cart';
-import { CartDetail } from '../models/CartDetail';
 
 export interface AuthenticatedRequest extends Request {
   user?: User;
   sessionId?: string;
+  cartSessionId?: string;
 }
 
 export const authMiddleware = async (
@@ -20,7 +20,17 @@ export const authMiddleware = async (
 ) => {
   try {
     const sessionToken = req.headers.authorization?.replace('Bearer ', '');
-    const cartSessionId = req.headers['x-cart-session'] as string;
+    const cartSessionId = req.headers['x-cart-session'] as string | undefined;
+
+    console.log('Starting auth process:', {
+      sessionToken,
+      cartSessionId,
+      headers: req.headers
+    });
+
+    const sessionManager = UserSessionManager.getInstance();
+    const cartSessionManager = CartSessionManager.getInstance();
+    const { Cart } = getModels();
 
     if (!sessionToken) {
       return res.status(401).json({
@@ -29,18 +39,7 @@ export const authMiddleware = async (
       });
     }
 
-    const sessionManager = UserSessionManager.getInstance();
-    const cartSessionManager = CartSessionManager.getInstance();
-
-    // Add debug logging
-    console.log('Auth Debug:', {
-      sessionToken,
-      cartSessionId,
-      headers: req.headers
-    });
-    
     const session = await sessionManager.getSession(sessionToken);
-
     if (!session) {
       return res.status(401).json({
         status: 'error',
@@ -49,60 +48,42 @@ export const authMiddleware = async (
     }
 
     const user = await User.findByPk(session.id);
-    
-    if (!user) {
+    if (!user || !user.isActive()) {
       await sessionManager.destroySession(sessionToken);
       return res.status(401).json({
         status: 'error',
-        message: 'User not found'
+        message: 'User not found or inactive'
       });
     }
 
-    if (!user.isActive()) {
-      await sessionManager.destroySession(sessionToken);
-      return res.status(403).json({
-        status: 'error',
-        message: 'Account is not active'
-      });
-    }
+    let activeCart = null;
+    let finalCartSessionId: string | undefined;
 
-    // Attempt to merge carts if guest cart exists
-    if (cartSessionId) {
-      const { Cart } = getModels();
-      const guestCart = await Cart.findOne({
-        where: {
-          session_id: cartSessionId,
-          status: 'active' as CartStatus,
-          user_id: null
-        },
-        include: ['details']
-      });
+    activeCart = await Cart.findOne({
+      where: {
+        user_id: user.id,
+        status: 'active' as CartStatus
+      }
+    });
 
-      if (guestCart) {
-        const userCart = await Cart.findOne({
+    if (activeCart) {
+      finalCartSessionId = activeCart.session_id;
+      await cartSessionManager.ensureSession(
+        activeCart.id,
+        finalCartSessionId,
+        user.id
+      );
+    } else if (cartSessionId) {
+      const cartSession = await cartSessionManager.getSession(cartSessionId);
+      if (cartSession) {
+        const guestCart = await Cart.findOne({
           where: {
-            user_id: user.id,
+            id: cartSession.cart_id,
             status: 'active' as CartStatus
           }
         });
 
-        if (userCart) {
-          // Mark user's existing cart as abandoned
-          await userCart.update({ status: 'abandoned' as CartStatus });
-           // Convert guest cart to user cart while keeping it active
-           await guestCart.update({
-            user_id: user.id,
-            expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
-          });
-
-          // Update cart session
-          await cartSessionManager.updateSession(cartSessionId, {
-            cart_id: guestCart.id,
-            user_id: user.id,
-            expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
-          });
-        } else {
-          // Just assign guest cart to user
+        if (guestCart) {
           await guestCart.update({
             user_id: user.id,
             expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
@@ -113,14 +94,27 @@ export const authMiddleware = async (
             user_id: user.id,
             expires_at: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000))
           });
+
+          activeCart = guestCart;
+          finalCartSessionId = cartSessionId;
         }
       }
     }
 
-    await sessionManager.extendSession(sessionToken);
+    console.log('Session state after processing:', {
+      userId: user.id,
+      cartId: activeCart?.id,
+      cartSessionId: finalCartSessionId,
+      checkoutSession: req.headers['x-checkout-session']
+    });
 
     req.user = user;
     req.sessionId = sessionToken;
+    req.cartSessionId = finalCartSessionId;
+
+    if (finalCartSessionId) {
+      res.setHeader('X-Cart-Session', finalCartSessionId);
+    }
 
     next();
   } catch (error) {

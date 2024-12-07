@@ -40,12 +40,12 @@ import {
   };
 }
 
-interface CardPaymentRequestData extends BasePaymentRequestData {
+export interface CardPaymentRequestData extends BasePaymentRequestData {
   tokenId: string;
   deviceSessionId: string;
 }
 
-interface PSEPaymentRequestData extends BasePaymentRequestData {
+export interface PSEPaymentRequestData extends BasePaymentRequestData {
   redirectUrl: string;
   customer: {
     name: string;
