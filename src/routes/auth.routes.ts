@@ -3,8 +3,12 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { UserSessionManager } from '../services/UserSessionManager';
 import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
-import { getModels } from '../config/database';
+import { getModels, getSequelize } from '../config/database';
 import { z } from 'zod';
+import { User } from '../models/User';
+import { Person } from '../models/Person';
+import { PasswordHandler } from '../services/PasswordHandler';
+import { Transaction } from 'sequelize';
 
 const router = Router();
 
@@ -12,6 +16,25 @@ const router = Router();
 const loginSchema = z.object({
   email: z.string().email('Invalid email format'),
   password: z.string().min(6, 'Password must be at least 6 characters')
+});
+
+const registerSchema = z.object({
+  person: z.object({
+    first_name: z.string().min(2, 'First name must be at least 2 characters'),
+    last_name: z.string().min(2, 'Last name must be at least 2 characters'),
+    identification_type: z.enum(['C.C', 'C.E', 'PAS', 'NIT']),
+    identification_number: z.string().min(5, 'Invalid identification number'),
+    cell_phone_1: z.string().regex(/^\+?[1-9]\d{1,14}$/, 'Invalid phone number'),
+    cell_phone_1_whatsapp: z.boolean().default(true),
+    email: z.string().email('Invalid email address')
+  }),
+  password: z.string().min(8, 'Password must be at least 8 characters')
+    .regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/, 'Password must contain at least one uppercase letter, one lowercase letter, and one number')
+});
+
+const activationSchema = z.object({
+  token: z.string().min(1, 'Activation token is required'),
+  email: z.string().email('Invalid email address')
 });
 
 /**
@@ -169,6 +192,176 @@ router.get('/me', authMiddleware, async (req: AuthenticatedRequest, res: Respons
       status: 'error',
       message: 'An error occurred while fetching user information'
     });
+  }
+});
+
+/**
+ * @route POST /api/auth/register
+ * @desc Register a new user and send activation token
+ * @access Public
+ */
+router.post('/register', validateRequest(registerSchema), async (req: Request, res: Response, next: NextFunction) => {
+  const sequelize = getSequelize();
+  let transaction: Transaction | null = null;
+  let retryCount = 0;
+  const MAX_RETRIES = 3;
+
+  async function attemptRegistration() {
+    try {
+      transaction = await sequelize.transaction({
+        isolationLevel: Transaction.ISOLATION_LEVELS.READ_COMMITTED // Less strict isolation level
+      });
+
+      // Check if email already exists
+      const existingUser = await User.findOne({
+        where: { email: req.body.person.email },
+        transaction,
+        lock: Transaction.LOCK.UPDATE
+      });
+
+      if (existingUser) {
+        throw new Error('Email already registered');
+      }
+
+      // Create person record
+      const person = await Person.create({
+        ...req.body.person,
+        cell_phone_2: null,
+        cell_phone_2_whatsapp: false,
+        address: null,
+        shoe_size: null,
+        pants_size: null,
+        shirt_size: null,
+        file_id: null,
+        curriculum_vitae_id: null,
+        dni_id: null
+      }, { transaction });
+
+      // Create user with pending state
+      const user = await User.create({
+        email: req.body.person.email,
+        password: req.body.password,
+        state: 'PENDING',
+        person_id: person.id,
+        schedule_code: null,
+        identity_verified_at: null,
+        agency_id: null,
+        product_line_id: null,
+        social_network_name: null,
+        social_network_user_id: null,
+        city_id: null,
+        user_id: null
+      }, { transaction });
+
+      // Generate token in a separate operation after commit
+      await transaction.commit();
+      transaction = null;
+
+      // Generate activation token after transaction is committed
+      const token = await PasswordHandler.generateResetToken();
+      await user.update({
+        token: JSON.stringify({
+          token,
+          created_at: new Date()
+        })
+      });
+
+      const response: any = {
+        status: 'success',
+        message: 'Registration successful. Please check your email and WhatsApp for activation instructions.',
+        data: {
+          user_id: user.id,
+          email: user.email
+        }
+      };
+
+      if (process.env.NODE_ENV === 'development') {
+        response.data.activation_token = token;
+      }
+
+      return response;
+    } catch (error) {
+      if (transaction) await transaction.rollback();
+      throw error;
+    }
+  }
+
+  try {
+    let response;
+    while (retryCount < MAX_RETRIES) {
+      try {
+        response = await attemptRegistration();
+        break;
+      } catch (error: any) {
+        retryCount++;
+        if (error.name === 'SequelizeDatabaseError' && 
+            error.parent?.code === 'ER_LOCK_WAIT_TIMEOUT' && 
+            retryCount < MAX_RETRIES) {
+          await new Promise(resolve => setTimeout(resolve, 1000 * retryCount)); // Exponential backoff
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    res.status(201).json(response);
+  } catch (error) {
+    if (error instanceof Error) {
+      if (error.message === 'Email already registered') {
+        return res.status(409).json({
+          status: 'error',
+          message: 'Email already registered'
+        });
+      }
+    }
+    next(error);
+  }
+});
+
+/**
+ * @route POST /api/auth/activate
+ * @desc Activate user account with token
+ * @access Public
+ */
+router.post('/activate', validateRequest(activationSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { email, token } = req.body;
+
+    const user = await User.findOne({ where: { email } });
+    
+    if (!user) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'User not found'
+      });
+    }
+
+    if (user.state !== 'PENDING') {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Account is already activated or invalid state'
+      });
+    }
+
+    if (!user.isValidResetToken(token)) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Invalid or expired activation token'
+      });
+    }
+
+    await user.update({
+      state: 'ACTIVE',
+      token: null
+    });
+
+    res.json({
+      status: 'success',
+      message: 'Account activated successfully'
+    });
+
+  } catch (error) {
+    next(error);
   }
 });
 

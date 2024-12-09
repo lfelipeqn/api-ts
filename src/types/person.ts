@@ -1,6 +1,6 @@
 // types/person.ts
 
-export const IDENTIFICATION_TYPES = ['CC', 'CE', 'PAS', 'NIT'] as const;
+export const IDENTIFICATION_TYPES = ['C.C', 'C.E', 'PAS', 'NIT'] as const;
 export type IdentificationType = typeof IDENTIFICATION_TYPES[number];
 
 export interface PersonAttributes {
