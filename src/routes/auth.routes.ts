@@ -10,6 +10,16 @@ import { Person } from '../models/Person';
 import { PasswordHandler } from '../services/PasswordHandler';
 import { Transaction } from 'sequelize';
 
+import { Order } from '../models/Order';
+import { OrderPriceHistory } from '../models/OrderPriceHistory';
+import { Product } from '../models/Product';
+import { Payment } from '../models/Payment';
+import { Address } from '../models/Address';
+import { Agency } from '../models/Agency';
+import { City } from '../models/City';
+import { Department } from '../models/Department';
+import { PaymentMethodConfig } from '../models/PaymentMethodConfig';
+
 const router = Router();
 
 // Validation schemas
@@ -362,6 +372,171 @@ router.post('/activate', validateRequest(activationSchema), async (req: Request,
 
   } catch (error) {
     next(error);
+  }
+});
+
+router.get('/orders', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const orders = await Order.findAll({
+      where: { user_id: req.user!.id },
+      include: [
+        {
+          model: Payment,
+          as: 'lastPayment',
+          attributes: ['id', 'state', 'state_description']
+        },
+        {
+          model: PaymentMethodConfig,
+          as: 'paymentMethod',
+          attributes: ['id', 'name', 'type']
+        }
+      ],
+      order: [['created_at', 'DESC']]
+    });
+
+    const formattedOrders = orders.map(order => ({
+      id: order.id,
+      state: order.state,
+      total_amount: Number(order.total_amount),
+      delivery_type: order.delivery_type,
+      created_at: order.created_at,
+      payment: {
+        state: order.lastPayment?.state,
+        description: order.lastPayment?.state_description
+      },
+      payment_method: order.paymentMethod ? {
+        name: order.paymentMethod.name,
+        type: order.paymentMethod.type
+      } : null
+    }));
+
+    res.json({
+      status: 'success',
+      data: formattedOrders
+    });
+  } catch (error) {
+    console.error('Error fetching orders:', error);
+    res.status(500).json({
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Failed to fetch orders'
+    });
+  }
+});
+
+// Get detailed information for a specific order
+router.get('/orders/:id', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const order = await Order.findOne({
+      where: { 
+        id: req.params.id,
+        user_id: req.user!.id 
+      },
+      include: [
+        {
+          model: OrderPriceHistory,
+          as: 'orderPriceHistories',
+          include: [{
+            model: Product,
+            as: 'product',
+            attributes: ['id', 'name', 'reference']
+          }]
+        },
+        {
+          model: Payment,
+          as: 'lastPayment',
+          attributes: ['id', 'state', 'state_description', 'created_at']
+        },
+        {
+          model: PaymentMethodConfig,
+          as: 'paymentMethod',
+          attributes: ['id', 'name', 'type']
+        },
+        {
+          model: Address,
+          as: 'deliveryAddress',
+          include: [{
+            model: City,
+            as: 'city',
+            include: [{
+              model: Department,
+              as: 'department'
+            }]
+          }]
+        },
+        {
+          model: Agency,
+          as: 'pickupAgency',
+          include: [{
+            model: Address,
+            as: 'address',
+            include: [{
+              model: City,
+              as: 'city',
+              include: [{
+                model: Department,
+                as: 'department'
+              }]
+            }]
+          }]
+        }
+      ]
+    });
+
+    if (!order) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'Order not found'
+      });
+    }
+
+    // Get order summary with product details
+    const summary = await order.getOrderSummary();
+
+    const response = {
+      id: order.id,
+      state: order.state,
+      delivery_type: order.delivery_type,
+      delivery_info: order.delivery_type === 'SHIPPING' ? {
+        address: order.deliveryAddress ? {
+          detail: order.deliveryAddress.detail,
+          city: order.deliveryAddress.city?.name,
+          department: order.deliveryAddress.city?.department?.name
+        } : null
+      } : {
+        agency: order.pickupAgency ? {
+          name: order.pickupAgency.magister_cellar,
+          address: order.pickupAgency.address?.detail,
+          city: order.pickupAgency.address?.city?.name
+        } : null
+      },
+      payment: {
+        method: order.paymentMethod?.name,
+        type: order.paymentMethod?.type,
+        state: order.lastPayment?.state,
+        description: order.lastPayment?.state_description,
+        date: order.lastPayment?.created_at
+      },
+      amounts: {
+        subtotal: Number(order.subtotal_amount),
+        shipping: Number(order.shipping_amount),
+        discount: Number(order.discount_amount),
+        tax: Number(order.tax_amount),
+        total: Number(order.total_amount)
+      },
+      created_at: order.created_at,
+      items: summary.items
+    };
+
+    res.json({
+      status: 'success',
+      data: response
+    });
+  } catch (error) {
+    console.error('Error fetching order details:', error);
+    res.status(500).json({
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Failed to fetch order details'
+    });
   }
 });
 
