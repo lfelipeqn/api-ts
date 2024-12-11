@@ -72,12 +72,21 @@ export class DataSheetField extends Model<DataSheetFieldBase> {
   }
 
   static associate(models: any) {
-    DataSheetField.belongsTo(models.ProductLine, { foreignKey: 'product_line_id', as: 'productLine' });
+    DataSheetField.belongsTo(models.ProductLine, { 
+      foreignKey: 'product_line_id', 
+      as: 'productLine' 
+    });
+    
     DataSheetField.belongsToMany(models.DataSheet, {
       through: models.DataSheetValue,
       foreignKey: 'data_sheet_field_id',
       otherKey: 'data_sheet_id',
       as: 'dataSheets'
+    });
+  
+    DataSheetField.hasOne(models.DataSheetValue, {
+      foreignKey: 'data_sheet_field_id',
+      as: 'DataSheetValue'  // Maintain consistency with uppercase
     });
   }
 }

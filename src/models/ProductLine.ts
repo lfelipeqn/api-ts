@@ -6,10 +6,14 @@ import {
   BelongsToManyGetAssociationsMixin,
   HasManyGetAssociationsMixin,
   Op,
+  fn,
+  col
 } from 'sequelize';
 import { Product } from './Product';
 import { Brand } from './Brand';
 import { DataSheetField } from './DataSheetField';
+import { DataSheet } from './DataSheet';
+import { DataSheetValue } from './DataSheetValue'
 import { DataSheetBase, DataSheetFieldBase } from '../types/models';
 
 interface DataSheetWithFields extends DataSheetBase {
@@ -37,6 +41,14 @@ interface FilterResult {
   data_sheet_field: number;
   label: string;
   values: string[];
+}
+
+interface FilterableField {
+  id: number;
+  field_name: string;
+  type: string;
+  values: string[] | null;
+  current_values?: string[];
 }
 
 export class ProductLine extends Model<ProductLineAttributes, ProductLineCreationAttributes> {
@@ -182,6 +194,53 @@ export class ProductLine extends Model<ProductLineAttributes, ProductLineCreatio
     } catch (error) {
       console.error('Error getting filters:', error);
       throw new Error('Failed to get filters');
+    }
+  }
+
+  async getFilterableFields(): Promise<FilterableField[]> {
+    try {
+      const fields = await DataSheetField.findAll({
+        where: {
+          product_line_id: this.id,
+          use_to_filter: true
+        }
+      });
+  
+      return await Promise.all(fields.map(async field => {
+        // Get unique values currently in use for this field
+        const values = await DataSheetValue.findAll({
+          attributes: [
+            [fn('DISTINCT', col('value')), 'value']
+          ],
+          include: [{
+            model: DataSheet,
+            as: 'dataSheet',
+            where: { 
+              product_line_id: this.id 
+            },
+            attributes: []
+          }],
+          where: { 
+            data_sheet_field_id: field.id 
+          },
+          raw: true
+        });
+  
+        const fieldValues = field.type === 'Seleccionable' && field.values ? 
+          field.values.split(',').map(v => v.trim()) : 
+          null;
+  
+        return {
+          id: field.id,
+          field_name: field.field_name,
+          type: field.type,
+          values: fieldValues,
+          current_values: values.map((v: any) => v.value).filter(Boolean)
+        };
+      }));
+    } catch (error) {
+      console.error('Error getting filterable fields:', error);
+      throw error;
     }
   }
 

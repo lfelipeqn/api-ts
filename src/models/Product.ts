@@ -3,13 +3,11 @@ import {
   DataTypes, 
   Sequelize, 
   BelongsToGetAssociationMixin,
-  BelongsToManyGetAssociationsMixin,
   BelongsToManyAddAssociationMixin,
   BelongsToManyRemoveAssociationMixin,
   BelongsToManyHasAssociationMixin,
   HasManyGetAssociationsMixin,
   NonAttribute,
-  FindOptions,
   Op,
   Transaction,
   Optional
@@ -41,17 +39,9 @@ interface DataSheetResponse {
   }>;
 }
 
-interface ProductInfoWithDataSheet extends Omit<ProductInfo, 'data_sheet'> {
+/*interface ProductInfoWithDataSheet extends Omit<ProductInfo, 'data_sheet'> {
   data_sheet?: DataSheetResponse;
-}
-
-interface DataSheetWithFields extends DataSheet {
-  dataSheetFields?: Array<DataSheetField & {
-    DataSheetValue?: {
-      value: string;
-    };
-  }>;
-}
+}*/
 
 type ProductInfo = Omit<Product, 'files'> & {
   brand?: Brand | null;
@@ -160,24 +150,45 @@ interface ProductAttributes {
   updated_at?: Date;
 }
 
-interface FileAssociationOptions extends FindOptions {
+/*interface FileAssociationOptions extends FindOptions {
   through?: {
     attributes?: string[];
     where?: any;
   };
+}*/
+
+interface FilterCriteria {
+  fieldId: number;
+  values: string[];
+}
+
+interface ProductFilter {
+  brandId?: number;
+  productLineId?: number;
+  technicalFilters?: FilterCriteria[];
+}
+
+interface DataSheetFieldWithValue extends DataSheetField {
+  DataSheetValue?: {
+    value: string;
+  };
+}
+
+interface DataSheetWithFields extends DataSheet {
+  dataSheetFields?: DataSheetFieldWithValue[];
 }
 
 function isSequelizeError(error: any): error is Error & { name: string } {
   return error instanceof Error && 'name' in error;
 }
 
-function isFileWithThrough(file: any): file is FileWithThrough {
+/*function isFileWithThrough(file: any): file is FileWithThrough {
   return file && 'products_files' in file;
 }
 
 function isFileInstance(file: any): file is File {
   return file instanceof File;
-}
+}*/
 
 export class Product extends Model<ProductAttributes, ProductCreationAttributes>  {
   declare id: number;
@@ -1207,6 +1218,163 @@ static async searchWithCache(query: string, options: {
     });
   }
 
+  static async findByTechnicalSpecs(
+    filters: ProductFilter,
+    options: {
+      limit?: number;
+      offset?: number;
+      order?: [string, 'ASC' | 'DESC'][];
+    } = {}
+  ): Promise<{ rows: Product[]; count: number }> {
+    const where: any = { state: true };
+    if (filters.brandId) where.brand_id = filters.brandId;
+    if (filters.productLineId) where.product_line_id = filters.productLineId;
+  
+    let productIds: number[] | undefined;
+  
+    if (filters.technicalFilters?.length) {
+      // Get products that match all technical filters
+      const matchingProductIds = await Promise.all(
+        filters.technicalFilters.map(async filter => {
+          const values = await DataSheetValue.findAll({
+            attributes: ['data_sheet_id'],
+            where: {
+              data_sheet_field_id: filter.fieldId,
+              value: { [Op.in]: filter.values }
+            },
+            raw: true
+          });
+  
+          const dataSheetIds = values.map(v => v.data_sheet_id);
+          const dataSheets = await DataSheet.findAll({
+            attributes: ['product_id'],
+            where: { 
+              id: { [Op.in]: dataSheetIds },
+              product_id: { [Op.not]: null }
+            },
+            raw: true
+          });
+  
+          return dataSheets.map(ds => ds.product_id).filter((id): id is number => id !== null);
+        })
+      );
+  
+      // Find intersection of all matching product IDs
+      productIds = matchingProductIds.reduce((acc, curr) => 
+        acc ? acc.filter(id => curr.includes(id)) : curr
+      );
+  
+      if (productIds?.length === 0) {
+        return { rows: [], count: 0 };
+      }
+  
+      where.id = { [Op.in]: productIds };
+    }
+  
+    return Product.findAndCountAll({
+      where,
+      limit: options.limit,
+      offset: options.offset,
+      order: options.order || [['created_at', 'DESC']],
+      include: [
+        { model: Brand, as: 'brand' },
+        { model: ProductLine, as: 'productLine' }
+      ]
+    });
+  }
+  
+  async findSimilarProducts(options: {
+    limit?: number;
+    useSpecs?: boolean;
+    prioritizeFields?: number[];
+  } = {}): Promise<Product[]> {
+    const { limit = 4, useSpecs = true, prioritizeFields = [] } = options;
+  
+    // Get base similar products by reference (existing functionality)
+    const baseSimilar = await Product.findAll({
+      where: {
+        id: { [Op.ne]: this.id },
+        reference: this.reference,
+        state: true
+      },
+      limit
+    });
+  
+    if (!useSpecs || baseSimilar.length >= limit) {
+      return baseSimilar;
+    }
+  
+    // Get technical specifications for this product
+    const specs = await DataSheet.findOne({
+      where: { product_id: this.id },
+      include: [{
+        model: DataSheetField,
+        as: 'dataSheetFields',
+        where: { use_to_filter: true },
+        include: [{
+          model: DataSheetValue,
+          as: 'DataSheetValue' // Updated to match the association
+        }]
+      }]
+    }) as DataSheetWithFields | null;
+  
+    if (!specs) {
+      return baseSimilar;
+    }
+  
+    // Get products with similar specifications
+    const similarBySpecs = await Product.findAll({
+      where: {
+        id: { 
+          [Op.ne]: this.id,
+          [Op.notIn]: baseSimilar.map(p => p.id)
+        },
+        product_line_id: this.product_line_id,
+        state: true
+      },
+      include: [{
+        model: DataSheet,
+        as: 'dataSheets',
+        include: [{
+          model: DataSheetField,
+          as: 'dataSheetFields',
+          where: { use_to_filter: true },
+          include: [{
+            model: DataSheetValue,
+            as: 'DataSheetValue' // Updated to match the association
+          }]
+        }]
+      }],
+      limit: limit - baseSimilar.length
+    });
+  
+    // Score similar products based on matching specifications
+    const scoredProducts = similarBySpecs.map(product => {
+      let score = 0;
+      const productSpecs = (product.dataSheets?.[0] as DataSheetWithFields);
+      
+      if (productSpecs?.dataSheetFields) {
+        specs.dataSheetFields?.forEach(field => {
+          const matchingField = productSpecs.dataSheetFields?.find(
+            f => f.id === field.id
+          );
+          
+          if (matchingField?.DataSheetValue?.value === field.DataSheetValue?.value) {
+            score += prioritizeFields.includes(field.id) ? 2 : 1;
+          }
+        });
+      }
+  
+      return { product, score };
+    });
+  
+    // Sort by score and combine with base similar products
+    const sortedSimilar = scoredProducts
+      .sort((a, b) => b.score - a.score)
+      .map(item => item.product);
+  
+    return [...baseSimilar, ...sortedSimilar];
+  }
 }
 
 

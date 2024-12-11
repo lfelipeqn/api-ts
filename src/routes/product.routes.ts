@@ -100,8 +100,75 @@ const getProductPricing = async (productId: number) => {
   };
 };
 
+const processProductDetails = async (product: Product): Promise<any> => {
+  try {
+    // Get pricing info and active promotions
+    const pricingInfo = await getProductPricing(product.id);
+    
+    // Get stock information
+    const totalStock = await product.getTotalStock();
+    const stockSummary = await product.getStockSummary();
+    
+    // Get product images
+    const files = await File.getByProductId(product.id);
+    const fileInstance = new File();
+    const processedFiles = await Promise.all(
+      files.map(file => fileInstance.processFileDetails(file))
+    );
+    const principalImage = processedFiles.find(img => img.products_files?.principal);
+
+    // Process brand with image if available
+    let brandWithImage = null;
+    if (product.brand) {
+      const brand = await Brand.findByPk(product.brand.id);
+      if (brand) {
+        brandWithImage = await brand.toDetailedJSON();
+      }
+    }
+
+    // Get technical specifications
+    const dataSheet = await DataSheet.findOne({
+      where: { product_id: product.id },
+      include: [{
+        model: DataSheetField,
+        as: 'dataSheetFields',
+        through: {
+          attributes: ['value']
+        }
+      }]
+    });
+
+    const dataSheetInfo = dataSheet ? {
+      id: dataSheet.id,
+      name: dataSheet.name,
+      year: dataSheet.year,
+      fields: dataSheet.dataSheetFields?.map(field => ({
+        id: field.id,
+        name: field.field_name,
+        type: field.type,
+        value: (field as any).DataSheetValue?.value || ''
+      })) || []
+    } : null;
+
+    return {
+      ...product.toJSON(),
+      ...pricingInfo,
+      brand: brandWithImage,
+      images: processedFiles,
+      principalImage: principalImage?.url,
+      total_stock: totalStock,
+      stock_summary: stockSummary,
+      data_sheet: dataSheetInfo,
+      agencies_stock: await product.getStockByAgency(product.id)
+    };
+  } catch (error) {
+    console.error('Error processing product details:', error);
+    throw error;
+  }
+};
+
 // Get product list with pagination and search
-router.get('/products', async (req, res) => {
+/*router.get('/products', async (req, res) => {
   try {
     const {
       query = '',
@@ -195,6 +262,55 @@ router.get('/products', async (req, res) => {
     res.status(500).json({ 
       error: 'Failed to fetch products',
       message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});*/
+
+router.get('/products', async (req, res) => {
+  try {
+    const {
+      query = '',
+      page = 1,
+      limit = 10,
+      brandId,
+      productLineId,
+      technicalFilters
+    } = req.query;
+
+    const parsedFilters = technicalFilters ? JSON.parse(String(technicalFilters)) : [];
+    
+    const offset = (Number(page) - 1) * Number(limit);
+
+    const products = await Product.findByTechnicalSpecs({
+      brandId: brandId ? Number(brandId) : undefined,
+      productLineId: productLineId ? Number(productLineId) : undefined,
+      technicalFilters: parsedFilters
+    }, {
+      limit: Number(limit),
+      offset,
+      order: [['created_at', 'DESC']]
+    });
+
+    // Process each product with full details
+    const processedProducts = await Promise.all(
+      products.rows.map(processProductDetails)
+    );
+
+    res.json({
+      status: 'success',
+      data: processedProducts,
+      meta: {
+        total: products.count,
+        page: Number(page),
+        lastPage: Math.ceil(products.count / Number(limit))
+      }
+    });
+
+  } catch (error) {
+    console.error('Error searching products:', error);
+    res.status(500).json({
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Failed to search products'
     });
   }
 });
@@ -465,24 +581,40 @@ router.post('/products/:id/stock', async (req, res) => {
   }
 });
 
-router.get('/products/:id/total-stock', async (req, res) => {
+router.get('/products/:id/similar', async (req, res) => {
   try {
+    const { useSpecs = true, prioritizeFields } = req.query;
+    
     const product = await Product.findByPk(req.params.id);
     if (!product) {
-      return res.status(404).json({ error: 'Product not found' });
+      return res.status(404).json({
+        status: 'error',
+        message: 'Product not found'
+      });
     }
 
-    const totalStock = await product.getTotalStock();
-    
-    res.json({ 
-      product_id: product.id,
-      total_stock: totalStock
+    const similarProducts = await product.findSimilarProducts({
+      limit: 4,
+      useSpecs: useSpecs === 'true',
+      prioritizeFields: prioritizeFields ? 
+        String(prioritizeFields).split(',').map(Number) : 
+        undefined
+    });
+
+    // Process each similar product with full details
+    const processedProducts = await Promise.all(
+      similarProducts.map(processProductDetails)
+    );
+
+    res.json({
+      status: 'success',
+      data: processedProducts
     });
   } catch (error) {
-    console.error('Error getting total stock:', error);
-    res.status(500).json({ 
-      error: 'Failed to get total stock',
-      message: error instanceof Error ? error.message : 'Unknown error'
+    console.error('Error fetching similar products:', error);
+    res.status(500).json({
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Failed to fetch similar products'
     });
   }
 });
@@ -557,33 +689,50 @@ router.post('/products/:id/price', async (req, res) => {
 
 router.get('/products/:id/similar', async (req, res) => {
   try {
+    const { useSpecs = true, prioritizeFields } = req.query;
+    
     const product = await Product.findByPk(req.params.id);
     if (!product) {
-      return res.status(404).json({ error: 'Product not found' });
+      return res.status(404).json({
+        status: 'error',
+        message: 'Product not found'
+      });
     }
 
-    const similarProducts = await Product.findAll({
-      where: {
-        reference: product.reference,
-        id: { [Op.ne]: product.id },
-        state: true
-      },
+    const similarProducts = await product.findSimilarProducts({
       limit: 4,
-      include: [
-        { model: Brand, as: 'brand' },
-        { model: ProductLine, as: 'productLine' }
-      ]
+      useSpecs: useSpecs === 'true',
+      prioritizeFields: prioritizeFields ? 
+        String(prioritizeFields).split(',').map(Number) : 
+        undefined
     });
+
+    const processedProducts = await Promise.all(
+      similarProducts.map(async (product) => {
+        const pricingInfo = await product.getCurrentPrice();
+        const files = await File.getByProductId(product.id);
+        const processedFiles = await Promise.all(
+          files.map(file => new File().processFileDetails(file))
+        );
+
+        return {
+          ...product.toJSON(),
+          price: pricingInfo,
+          images: processedFiles,
+          principalImage: processedFiles.find(img => img.products_files?.principal)?.url
+        };
+      })
+    );
 
     res.json({
       status: 'success',
-      data: similarProducts
+      data: processedProducts
     });
   } catch (error) {
     console.error('Error fetching similar products:', error);
-    res.status(500).json({ 
-      error: 'Failed to fetch similar products',
-      message: error instanceof Error ? error.message : 'Unknown error'
+    res.status(500).json({
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Failed to fetch similar products'
     });
   }
 });
@@ -656,6 +805,32 @@ router.get('/products/:id/prices', async (req, res) => {
   } catch (error) {
     console.error('Error getting product prices:', error);
     res.status(500).json({ error: 'Failed to get product prices' });
+  }
+});
+
+router.get('/product-lines/:id/filters', async (req, res) => {
+  try {
+    const productLine = await ProductLine.findByPk(req.params.id);
+    
+    if (!productLine) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'Product line not found'
+      });
+    }
+
+    const filters = await productLine.getFilterableFields();
+    
+    res.json({
+      status: 'success',
+      data: filters
+    });
+  } catch (error) {
+    console.error('Error getting product line filters:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to get filters'
+    });
   }
 });
 

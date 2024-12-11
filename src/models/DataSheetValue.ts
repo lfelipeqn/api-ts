@@ -1,4 +1,6 @@
 import { Model, DataTypes, Sequelize } from 'sequelize';
+import { DataSheet } from '../models/DataSheet';
+import { DataSheetField } from '../models/DataSheetField';
 
 interface DataSheetValueAttributes {
   id: number;
@@ -67,4 +69,20 @@ export class DataSheetValue extends Model<DataSheetValueAttributes> {
 
     return DataSheetValue;
   }
+
+  static associate(models: {
+    DataSheet: typeof DataSheet;
+    DataSheetField: typeof DataSheetField;
+  }) {
+    DataSheetValue.belongsTo(models.DataSheet, {
+      foreignKey: 'data_sheet_id',
+      as: 'dataSheet'
+    });
+  
+    DataSheetValue.belongsTo(models.DataSheetField, {
+      foreignKey: 'data_sheet_field_id',
+      as: 'field'
+    });
+  }
+
 }

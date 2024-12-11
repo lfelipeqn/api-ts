@@ -117,6 +117,11 @@ export class DataSheet extends Model<DataSheetAttributes> {
       otherKey: 'data_sheet_field_id',
       as: 'dataSheetFields'
     });
+    
+    DataSheet.hasMany(models.DataSheetValue, {
+      foreignKey: 'data_sheet_id',
+      as: 'values'
+    });
   }
 
   async hasValue(data_sheet_field_id: number, value: string): Promise<boolean> {
