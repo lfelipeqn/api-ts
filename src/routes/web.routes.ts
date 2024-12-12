@@ -10,6 +10,7 @@ import { Address } from '../models/Address';
 import { File } from '../models/File';
 import { PaymentMethodConfig } from '../models/PaymentMethodConfig';
 import { GatewayConfig } from '../models/GatewayConfig';
+import { Product } from '../models/Product';
 
 const router = Router();
 const sequelize = getSequelize();
@@ -18,6 +19,13 @@ const sequelize = getSequelize();
 router.get('/categories', async (req, res) => {
   try {
     const categories = await ProductLine.findAll({
+      include: [{
+        model: Product,
+        as: 'products',
+        where: { state: true },
+        attributes: [],
+        required: true
+      }],
       attributes: ['id', 'name'],
       order: [['name', 'ASC']]
     });
@@ -41,20 +49,27 @@ router.get('/categories/:id/brands', async (req, res) => {
     const categoryId = parseInt(req.params.id);
 
     const brands = await Brand.findAll({
-      include: [{
-        model: ProductLine,
-        as: 'productLines',
-        where: { id: categoryId },
-        attributes: [],
-        through: {
-          attributes: []
+      include: [
+        {
+          model: ProductLine,
+          as: 'productLines',
+          where: { id: categoryId },
+          attributes: [],
+          through: { attributes: [] }
+        },
+        {
+          model: File,
+          as: 'file',
+          required: false
+        },
+        {
+          model: Product,
+          as: 'products',
+          where: { state: true },
+          attributes: [],
+          required: true
         }
-      },
-      {
-        model: File,
-        as: 'file',
-        required: false
-      }],
+      ],
       attributes: ['id', 'name', 'file_id'],
       order: [['name', 'ASC']]
     });
@@ -89,11 +104,20 @@ router.get('/brands', async (req, res) => {
   try {
     const categoryId = req.query.categoryId ? parseInt(req.query.categoryId as string) : undefined;
 
-    const include: Includeable[] = [{
-      model: File,
-      as: 'file',
-      required: false
-    }];
+    const include: Includeable[] = [
+      {
+        model: File,
+        as: 'file',
+        required: false
+      },
+      {
+        model: Product,
+        as: 'products',
+        where: { state: true },
+        attributes: [],
+        required: true
+      }
+    ];
     
     if (categoryId) {
       include.push({
@@ -101,9 +125,7 @@ router.get('/brands', async (req, res) => {
         as: 'productLines',
         where: { id: categoryId },
         attributes: [],
-        through: {
-          attributes: []
-        }
+        through: { attributes: [] }
       });
     }
 
