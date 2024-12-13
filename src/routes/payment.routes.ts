@@ -1,9 +1,11 @@
-import { Router, Request, Response, NextFunction } from 'express';
+import express, { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { PaymentGatewayService } from '../services/PaymentGatewayService';
 import { PaymentMethodConfig } from '../models/PaymentMethodConfig';
 import { GatewayConfig } from '../models/GatewayConfig';
+import { WebhookService } from '../services/webhooks/WebhookService';
+import { json } from 'body-parser';
 import { 
   PaymentMethodType, 
   PSEPaymentRequest, 
@@ -11,10 +13,11 @@ import {
   CreditCardPaymentRequest,
   PaymentCustomer,
   PAYMENT_GATEWAYS,
-  
 } from '../types/payment';
 
 const router = Router();
+const webhookService = WebhookService.getInstance();
+
 
 interface PaymentMethodResponse {
   id: number;
@@ -106,6 +109,27 @@ const createTokenSchema = z.object({
     country_code: z.string().default('CO')
   })
 });
+
+const webhookBodyParser = (req: Request, res: Response, next: Function) => {
+  if (req.method === 'POST') {
+      // Use raw body parser for webhook POST requests
+      express.raw({ type: 'application/json' })(req, res, () => {
+          try {
+              if (req.body) {
+                  const strBody = req.body.toString('utf8');
+                  req.body = strBody ? JSON.parse(strBody) : {};
+              }
+              next();
+          } catch (e) {
+              console.error('Error parsing webhook body:', e);
+              next();
+          }
+      });
+  } else {
+      // For non-POST requests, proceed normally
+      next();
+  }
+};
 
 // Error handling middleware
 const errorHandler = (err: any, req: AuthenticatedRequest, res: Response, next: NextFunction) => {
@@ -562,29 +586,23 @@ router.get('/status/:transactionId', async (req: AuthenticatedRequest, res: Resp
   }
 });
 
-/**
- * Webhook for payment status updates
- * @route POST /api/payments/test/webhook
- */
-router.post('/webhook', async (req: Request, res: Response) => {
+
+router.all('/webhooks/openpay', webhookBodyParser, async (req: Request, res: Response) => {
   try {
-    console.log('Received webhook:', {
-      body: req.body,
-      headers: {
-        'x-openpay-signature': req.headers['x-openpay-signature']
-      },
-      timestamp: new Date().toISOString()
-    });
+      console.log('Processing webhook request:', {
+          method: req.method,
+          path: req.path,
+          headers: req.headers,
+          body: req.method === 'POST' ? req.body : undefined
+      });
 
-    // TODO: Verify webhook signature
-    // TODO: Process payment status update
-    // TODO: Update order status in your system
-
-    res.status(200).json({ received: true });
-
+      await webhookService.handleWebhook('openpay', req, res);
   } catch (error) {
-    console.error('Webhook processing error:', error);
-    res.status(500).json({ error: 'Webhook processing failed' });
+      console.error('Error handling webhook:', error);
+      res.status(500).json({
+          status: 'error',
+          message: 'Failed to process webhook'
+      });
   }
 });
 
