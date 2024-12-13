@@ -189,28 +189,32 @@ export class OpenPayWebhookHandler extends BaseWebhookHandler {
 
     public async processWebhook(event: any): Promise<void> {
         this.logWebhookEvent(event);
-
+    
         const payment = await Payment.findOne({
             where: { transaction_id: event.transaction.id }
         });
-
+    
         if (!payment) {
             throw new Error(`Payment not found for transaction: ${event.transaction.id}`);
         }
-
+    
         const paymentState = this.mapPaymentStatus(event.transaction.status);
         const orderState = this.mapOrderStatus(paymentState);
-
+    
+        // Generate a meaningful state description
+        const stateDescription = event.transaction.status_description || 
+            this.generateStateDescription(event.transaction.status, event.transaction.method);
+    
         await payment.update({
             state: paymentState,
-            state_description: event.transaction.status_description || event.transaction.error_message,
+            state_description: stateDescription, // Now always providing a description
             gateway_response: JSON.stringify(event.transaction),
             external_reference: event.transaction.authorization,
             error_message: event.transaction.error_message,
             last_attempt_at: new Date(),
             attempts: payment.attempts + 1
         });
-
+    
         if (payment.order_id) {
             const order = await Order.findByPk(payment.order_id);
             if (order) {
@@ -219,6 +223,29 @@ export class OpenPayWebhookHandler extends BaseWebhookHandler {
                     last_payment_id: payment.id
                 });
             }
+        }
+    }
+
+    private generateStateDescription(status: string, method: string): string {
+        const methodText = method === 'bank_account' ? 'PSE payment' : 'Payment';
+        
+        switch (status) {
+            case 'completed':
+                return `${methodText} completed successfully`;
+            case 'failed':
+                return `${methodText} failed`;
+            case 'cancelled':
+                return `${methodText} was cancelled`;
+            case 'refunded':
+                return `${methodText} was refunded`;
+            case 'in_progress':
+                return `${methodText} is in progress`;
+            case 'timeout':
+                return `${methodText} timed out`;
+            case 'error':
+                return `${methodText} encountered an error`;
+            default:
+                return `${methodText} status: ${status}`;
         }
     }
 
