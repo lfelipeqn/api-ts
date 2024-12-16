@@ -1,7 +1,6 @@
 // src/services/EmailService.ts
 
 import nodemailer, { Transporter } from 'nodemailer';
-import { Template } from '../types/email';
 
 export class EmailService {
   private static instance: EmailService;
