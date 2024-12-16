@@ -4,7 +4,8 @@
   "scripts": {
     "start": "node dist/index.js",
     "dev": "nodemon src/index.ts",
-    "build": "tsc",
+    "build": "node scripts/build.js && tsc",
+    "build:prod": "NODE_ENV=production npm run build",
     "lint": "eslint . --ext .ts",
     "format": "prettier --write \"src/**/*.ts\""
   },

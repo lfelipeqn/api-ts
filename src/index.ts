@@ -123,6 +123,23 @@ app.use((err: ApiError, req: Request, res: Response, next: NextFunction) => {
 
 async function startServer() {
   try {
+
+    // Add security headers
+    app.use((req: Request, res: Response, next: NextFunction) => {
+      // Only allow HTTPS connections from the load balancer
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+      
+      // Trust GCP Load Balancer headers
+      app.set('trust proxy', true);
+      
+      // Redirect HTTP to HTTPS (handled by load balancer)
+      if (!req.secure && process.env.NODE_ENV === 'production') {
+        return res.redirect(301, `https://${req.headers.host}${req.url}`);
+      }
+      
+      next();
+    }); 
+    
     const { sequelize } = getDatabase();
     await sequelize.authenticate();
     console.log('Database connection has been established successfully.');

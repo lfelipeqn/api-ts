@@ -18,6 +18,9 @@ const router = Router();
 const apiRouter = Router();
 
 // Add all routers to main router
+router.use('/health', (req: Request, res: Response) => {
+  res.status(200).json({ status: 'healthy' });
+});
 router.use('/redis', redisRoutes);
 router.use('/api', apiRouter);
 
