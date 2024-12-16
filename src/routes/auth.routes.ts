@@ -47,6 +47,15 @@ const activationSchema = z.object({
   email: z.string().email('Invalid email address')
 });
 
+// Add this validation schema at the top with other schemas
+const resetPasswordSchema = z.object({
+  userId: z.number(),
+  token: z.string(),
+  newPassword: z.string()
+    .min(8, 'Password must be at least 8 characters')
+    .regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/, 'Password must contain at least one uppercase letter, one lowercase letter, and one number')
+});
+
 /**
  * Middleware to validate request body against a schema
  */
@@ -72,12 +81,15 @@ const validateRequest = (schema: z.ZodSchema) => async (req: Request, res: Respo
  * @desc Authenticate user & get session token
  * @access Public
  */
+// In auth.routes.ts
+
+// In auth.routes.ts
+
 router.post('/login', validateRequest(loginSchema), async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
     const { User } = getModels();
 
-    // Find user by email
     const user = await User.findOne({
       where: { email },
       include: [{
@@ -88,38 +100,60 @@ router.post('/login', validateRequest(loginSchema), async (req: Request, res: Re
 
     if (!user) {
       return res.status(401).json({
-        status: 'error',
-        message: 'Invalid credentials'
+        success: false,
+        error: {
+          code: 'INVALID_CREDENTIALS',
+          message: 'Invalid credentials'
+        }
       });
     }
 
-    // Verify user state
     if (!user.isActive()) {
       return res.status(403).json({
-        status: 'error',
-        message: 'Account is not active',
-        state: user.state
+        success: false,
+        error: {
+          code: 'ACCOUNT_INACTIVE',
+          message: 'Account is not active',
+          state: user.state
+        }
       });
     }
 
-    // Verify password
-    const isValidPassword = await user.verifyPassword(password);
-    if (!isValidPassword) {
+    const { isValid, requiresNewPassword } = await user.verifyPassword(password);
+
+    if (requiresNewPassword) {
+      const resetToken = await user.createPasswordResetToken();
+      
+      return res.json({
+        success: false,
+        error: {
+          code: 'PASSWORD_RESET_REQUIRED',
+          message: 'Password reset required'
+        },
+        data: {
+          userId: user.id,
+          email: user.email,
+          resetToken,
+          name: user.person?.first_name || null
+        }
+      });
+    }
+
+    if (!isValid) {
       return res.status(401).json({
-        status: 'error',
-        message: 'Invalid credentials'
+        success: false,
+        error: {
+          code: 'INVALID_CREDENTIALS',
+          message: 'Invalid credentials'
+        }
       });
     }
 
-    // Create session
     const sessionId = await user.createSession();
-
-    // Get full user info
     const userInfo = await user.getInfo();
 
-    res.status(200).json({
-      status: 'success',
-      message: 'Login successful',
+    return res.status(200).json({
+      success: true,
       data: {
         token: sessionId,
         user: {
@@ -132,11 +166,15 @@ router.post('/login', validateRequest(loginSchema), async (req: Request, res: Re
         }
       }
     });
+
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'An error occurred during login'
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'SERVER_ERROR',
+        message: 'An error occurred during login'
+      }
     });
   }
 });
@@ -169,6 +207,87 @@ router.post('/logout', authMiddleware, async (req: AuthenticatedRequest, res: Re
     res.status(500).json({
       status: 'error',
       message: 'An error occurred during logout'
+    });
+  }
+});
+
+// Add these new routes
+router.post('/reset-password', validateRequest(resetPasswordSchema), async (req: Request, res: Response) => {
+  try {
+    const { userId, token, newPassword } = req.body;
+
+    const user = await User.findByPk(userId);
+    if (!user) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'User not found'
+      });
+    }
+
+    // Log the password reset attempt
+    console.log('Password reset attempt:', {
+      userId,
+      hasToken: !!token,
+      passwordLength: newPassword.length
+    });
+
+    // Attempt to reset the password
+    const success = await user.resetPassword(token, newPassword);
+    
+    if (!success) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Invalid or expired reset token'
+      });
+    }
+
+    // Log successful password reset
+    console.log('Password reset successful:', {
+      userId,
+      newHashPrefix: user.password.substring(0, 4)
+    });
+
+    res.json({
+      status: 'success',
+      message: 'Password has been reset successfully'
+    });
+
+  } catch (error) {
+    console.error('Password reset error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to reset password'
+    });
+  }
+});
+
+// Add a route to verify if a reset token is valid (optional but useful)
+router.post('/verify-reset-token', async (req: Request, res: Response) => {
+  try {
+    const { userId, token } = req.body;
+
+    const user = await User.findByPk(userId);
+    if (!user) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'User not found'
+      });
+    }
+
+    const isValid = user.isValidResetToken(token);
+
+    res.json({
+      status: 'success',
+      data: {
+        isValid
+      }
+    });
+
+  } catch (error) {
+    console.error('Token verification error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to verify reset token'
     });
   }
 });

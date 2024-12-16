@@ -1,4 +1,9 @@
-import { Model, DataTypes, Sequelize, Association, HasOneGetAssociationMixin } from 'sequelize';
+import { Model, DataTypes, Sequelize, Association, HasOneGetAssociationMixin,
+  ModelStatic, InferAttributes, 
+  InferCreationAttributes,
+  CreationOptional,
+  NonAttribute
+ } from 'sequelize';
 import { Person } from './Person';
 import { Agency } from './Agency';
 import { ProductLine } from './ProductLine';
@@ -14,7 +19,7 @@ import {
   USER_STATES,
   TokenData
 } from '../types/user';
-
+import bcrypt from 'bcrypt';
 
 export class User extends Model<UserAttributes, UserCreationAttributes> {
   declare id: number;
@@ -208,9 +213,64 @@ export class User extends Model<UserAttributes, UserCreationAttributes> {
     return sessionManager.destroyUserSessions(this.id);
   }
 
-  // Authentication Methods
-  async verifyPassword(password: string): Promise<boolean> {
-    return PasswordHandler.verifyPassword(password, this.password);
+  // Authentication Methods}
+  // In User model
+
+  async verifyPassword(password: string): Promise<{
+    isValid: boolean;
+    requiresNewPassword: boolean;
+  }> {
+    try {
+      // Check if password exists and is not empty
+      if (!this.password || this.password.trim() === '') {
+        console.log('No password stored for user - requires new password');
+        return {
+          isValid: false,
+          requiresNewPassword: true
+        };
+      }
+  
+      // Direct bcrypt comparison
+      const isValid = await bcrypt.compare(password, this.password);
+      
+      console.log('Password verification result:', {
+        hasPassword: true,
+        isValid,
+        passwordLength: password.length,
+        storedHashLength: this.password.length
+      });
+  
+      return {
+        isValid,
+        requiresNewPassword: false
+      };
+    } catch (error) {
+      console.error('Password verification error:', error);
+      return {
+        isValid: false,
+        requiresNewPassword: false
+      };
+    }
+  }
+  
+  async resetPassword(token: string, newPassword: string): Promise<boolean> {
+    try {
+      if (!this.isValidResetToken(token)) {
+        return false;
+      }
+  
+      // Let the model hooks handle the password hashing
+      await this.update({ 
+        password: newPassword, // Store plain password, let hooks hash it
+        token: null 
+      });
+  
+      await this.destroyAllSessions();
+      return true;
+    } catch (error) {
+      console.error('Error resetting password:', error);
+      return false;
+    }
   }
 
   async changePassword(newPassword: string): Promise<void> {
@@ -266,26 +326,6 @@ export class User extends Model<UserAttributes, UserCreationAttributes> {
    */
   async clearResetToken(): Promise<void> {
     await this.update({ token: null });
-  }
-
-  /**
-   * Reset password using token
-   */
-  async resetPassword(token: string, newPassword: string): Promise<boolean> {
-    if (!this.isValidResetToken(token)) {
-      return false;
-    }
-
-    try {
-      await this.changePassword(newPassword);
-      await this.clearResetToken();
-      // Destroy all sessions when password is reset
-      await this.destroyAllSessions();
-      return true;
-    } catch (error) {
-      console.error('Error resetting password:', error);
-      return false;
-    }
   }
 
 

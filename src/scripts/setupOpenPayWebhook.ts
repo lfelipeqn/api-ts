@@ -3,7 +3,7 @@
 /**
  * In development:
  * ngrok http 3000
- * npx ts-node src/scripts/manageOpenPayWebhook.ts "https://your-ngrok-url/api/payments/webhooks"
+ * npx ts-node src/scripts/setupOpenPayWebhook.ts "https://URL_NGROK/api/payments/webhooks/openpay"
  * 
  * In production:
  * NODE_ENV=production npx ts-node src/scripts/manageOpenPayWebhook.ts

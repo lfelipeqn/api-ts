@@ -59,7 +59,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header(
     'Access-Control-Allow-Headers', 
-    'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Cart-Session, X-Checkout-Session'
+    'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Cart-Session, X-Checkout-Session, X-API-Key'
   );
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
