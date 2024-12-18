@@ -6,6 +6,7 @@ import { CartSessionManager } from '../services/CartSessionManager';
 import { getModels } from '../config/database';
 import { User } from '../models/User';
 import { CartStatus } from '../types/cart';
+import { Cart } from '../models/Cart';
 
 export interface AuthenticatedRequest extends Request {
   user?: User;
@@ -56,7 +57,7 @@ export const authMiddleware = async (
       });
     }
 
-    let activeCart = null;
+    let activeCart:Cart | null = null;
     let finalCartSessionId: string | undefined;
 
     activeCart = await Cart.findOne({

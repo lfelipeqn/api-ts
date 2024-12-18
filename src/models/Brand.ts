@@ -9,19 +9,8 @@ import {
 import { Product } from './Product';
 import { ProductLine } from './ProductLine';
 import { File } from './File';
-import { FileWithDetails, ImageSizes } from '../types/file';
-
-
-// Interfaces
-interface BrandAttributes {
-  id: number;
-  name: string;
-  for_vehicles: boolean;
-  for_products: boolean;
-  file_id: number | null;
-  created_at?: Date;
-  updated_at?: Date;
-}
+import { ImageSizes } from '../types/file';
+import { BrandAttributes, BrandWithImage } from '../types/brand'
 
 interface BrandCreationAttributes extends Optional<BrandAttributes, 'id' | 'created_at' | 'updated_at'> {}
 
@@ -31,13 +20,6 @@ interface BrandUpdate {
   for_products?: boolean;
   productLines?: ProductLine[] | number[];
   file?: Express.Multer.File;
-}
-
-interface BrandWithImage extends BrandAttributes {
-  image?: {
-    url: string;
-    sizes?: ImageSizes;
-  };
 }
 
 export class Brand extends Model<BrandAttributes, BrandCreationAttributes> {

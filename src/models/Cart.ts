@@ -250,7 +250,7 @@ import {
           include: ['product']
         });
     
-        const invalidItems = [];
+        const invalidItems:any[] = [];
     
         for (const detail of details) {
           const stockAvailable = await detail.validateStock();

@@ -341,7 +341,7 @@ export class CheckoutService {
       available: number;
     }>;
   }> {
-    const invalidItems = [];
+    const invalidItems:any[] = [];
     
     for (const detail of cart.details || []) {
       const stockValidation = await detail.validateStock();
@@ -446,7 +446,7 @@ export class CheckoutService {
   async processPayment(orderId: number, paymentData: PaymentRequestData): Promise<ProcessedPaymentResponse> {
     const t = await this.sequelize!.transaction();
     let isTransactionCommitted = false;
-    let paymentDetails = null;
+    let paymentDetails: PaymentDetails | null = null;
     let orderState: OrderState = 'PAYMENT_PENDING';
   
     try {

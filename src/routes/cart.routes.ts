@@ -7,6 +7,7 @@ import { Transaction, Op } from 'sequelize';
 import { CartStatus } from '../types/cart';
 import { UserSessionManager } from '../services/UserSessionManager';
 import { CartDetail } from '../models/CartDetail';
+import { Cart } from '../models/Cart';
 
 const router = Router();
 
@@ -101,7 +102,7 @@ const getOrCreateCart = async (req: CartRequest & AuthenticatedRequest, res: Res
 
     transaction = await sequelize.transaction();
 
-    let cart = null;
+    let cart: Cart | null = null;
 
     // Priority 1: For authenticated users, first try to find their active cart
     if (userId) {
@@ -419,7 +420,7 @@ router.put('/cart/items/:product_id',
       transaction = await sequelize.transaction();
 
       // Find the active cart with priority
-      let activeCart = null;
+      let activeCart:Cart | null = null;
 
       // 1. Try to find authenticated user's cart
       if (userId) {
@@ -527,7 +528,7 @@ router.delete('/cart/items/:product_id',
       // Start transaction
       transaction = await sequelize.transaction();
 
-      let activeCart = null;
+      let activeCart:Cart |null = null;
 
       // 1. Try to find authenticated user's cart
       if (userId) {
@@ -566,7 +567,7 @@ router.delete('/cart/items/:product_id',
       // 3. If still no cart found, use the cart from middleware
       if (!activeCart && req.cart) {
         activeCart = req.cart;
-        console.log('Using middleware cart:', activeCart.id);
+        console.log('Using middleware cart:', activeCart?.id);
       }
 
       if (!activeCart) {

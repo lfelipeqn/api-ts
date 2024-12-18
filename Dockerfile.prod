@@ -1,0 +1,58 @@
+FROM node:20-slim
+
+# Define build environment
+ARG NODE_ENV
+ENV NODE_ENV=$NODE_ENV
+
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    nano \
+    default-mysql-client && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    npm install -g pm2
+
+WORKDIR /app
+
+# Copy package files
+COPY --chown=node:node package*.json ./
+COPY --chown=node:node tsconfig.json ./
+
+# Install dependencies and dev dependencies
+RUN npm ci && \
+    npm install -g typescript@5.3.3 && \
+    npm i --save multer@1.4.5-lts.1 \
+    bcrypt@5.1.1 \
+    nodemailer@6.9.16 \
+    mime-types@2.1.35 
+
+# Install type definitions
+RUN npm i --save-dev @types/multer@1.4.12 \
+    @types/node@20.11.0 \
+    @types/express@4.17.21 \
+    @types/bcrypt@5.0.2 \
+    @types/mime-types@2.1.4 \
+    @types/nodemailer@6.4.17 \
+    @types/sequelize@4.28.20
+
+# Verify TypeScript installation
+RUN tsc --version
+
+# Copy the rest of the code
+COPY --chown=node:node . .
+
+# Build TypeScript
+RUN npm run build
+
+# Remove development dependencies after build
+RUN npm prune --production
+
+# Create necessary directories and set permissions
+RUN mkdir -p dist/logs dist/uploads && \
+    chown -R node:node .
+
+USER node
+EXPOSE 3000
+
+CMD ["pm2-runtime", "ecosystem.config.js"]

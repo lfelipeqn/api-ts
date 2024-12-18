@@ -14,6 +14,7 @@ import { File } from '../models/File';
 import { FileWithDetails, FileWithPrincipal } from '../types/file';
 import { Promotion } from '../models/Promotion';
 import { PromotionProducts } from '../models/PromotionProduct';
+import { BrandWithImage } from '../types/brand';
 
 
 interface ProductImagesResponse {
@@ -72,7 +73,14 @@ const getProductPricing = async (productId: number) => {
 
   let discountedPrice = basePrice;
   let discountAmount = 0;
-  let appliedPromotion = null;
+  let appliedPromotion: {
+    id: number;
+    name: string;
+    type: "PERCENTAGE" | "FIXED";
+    discount: number;
+    start_date: Date;
+    end_date: Date;
+  } | null = null;
 
   if (activePromotions.length > 0) {
     const promotion = activePromotions[0];
@@ -87,8 +95,11 @@ const getProductPricing = async (productId: number) => {
       id: promotion.id,
       name: promotion.name,
       type: promotion.type,
-      discount: promotion.discount
+      discount: promotion.discount,
+      start_date: promotion.start_date,
+      end_date: promotion.end_date
     };
+    
   }
 
   return {
@@ -118,7 +129,7 @@ const processProductDetails = async (product: Product): Promise<any> => {
     const principalImage = processedFiles.find(img => img.products_files?.principal);
 
     // Process brand with image if available
-    let brandWithImage = null;
+    let brandWithImage:BrandWithImage | null = null;
     if (product.brand) {
       const brand = await Brand.findByPk(product.brand.id);
       if (brand) {
@@ -766,7 +777,14 @@ router.get('/products/:id/prices', async (req, res) => {
 
     let discountedPrice = basePrice;
     let discountAmount = 0;
-    let appliedPromotion = null;
+    let appliedPromotion: {
+      id: number;
+      name: string;
+      type: "PERCENTAGE" | "FIXED";
+      discount: number;
+      start_date: Date;
+      end_date: Date;
+    } | null = null;
 
     if (activePromotions.length > 0) {
       const promotion = activePromotions[0];
@@ -798,7 +816,9 @@ router.get('/products/:id/prices', async (req, res) => {
         id: p.id,
         name: p.name,
         type: p.type,
-        discount: p.discount
+        discount: p.discount,
+        start_date: p.start_date,
+        end_date: p.end_date
       }))
     });
 
