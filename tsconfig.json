@@ -22,7 +22,8 @@
     "noImplicitThis": true,
     "alwaysStrict": true,
     "types": ["node", "express", "multer"],
+    "typeRoots": ["./node_modules/@types"]
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "**/*.spec.ts"]
-}
+} 

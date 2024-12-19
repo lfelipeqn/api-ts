@@ -5,8 +5,10 @@ Dockerfile
 .git
 .gitignore
 README.md
-.env*
 dist
 .devcontainer
 .aws
 commands.txt
+.env
+# Don't ignore .env.production as we need it in the production build
+#.env.production
