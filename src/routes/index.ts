@@ -11,6 +11,8 @@ import checkoutRoutes from './checkout.routes';
 import webRoutes from './web.routes';
 import accountRoutes from './account.routes';
 import emailRoutes from './email.routes';
+import googleMerchantRoutes from './google-merchant.routes';
+
 
 const router = Router();
 
@@ -34,6 +36,7 @@ apiRouter.use('/payments', paymentRoutes);
 apiRouter.use('/checkout', checkoutRoutes);
 apiRouter.use('/account', accountRoutes);
 apiRouter.use('/email', emailRoutes);
+apiRouter.use('/google-merchant', googleMerchantRoutes);
 
 // Global error handler - this should be the last middleware
 apiRouter.use((err: any, req: Request, res: Response, next: NextFunction) => {

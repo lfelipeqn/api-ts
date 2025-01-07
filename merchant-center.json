@@ -1,0 +1,13 @@
+{
+    "type": "service_account",
+    "project_id": "merchant-center-batericars",
+    "private_key_id": "02c6646c5f52689adbe9460f41a8c5b43de35531",
+    "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDhEhQmmhmXS58S\nBWmJ+E7ncDpaR6XEzrfCWRUErbrYGmYHlxK6pv2gLlnbyCFIa7kQcRCWX/32X/Mv\nHJj65vVflWn7+JB09STZ3x7aJXvVYWxHgEtEDIhjHs0rLNVWpBCRl7Q9D3Qu6bhD\ntJU+w6iiNvRsKjAhqPpDMOxyKTNfiYDejEV1pxOj5Jr8PSU7Rm678e145LOoBbHs\nz2J5025SE8reOYuLc33tI0VRuU610yQZgp/sWTv9ViwU0lNy1tRRaNKQjOFgsYGq\nhLxoo+aq6AX39OkjVly0CupaTjiSfEz4ttuwhFiJXJIdfYWawVgLAn8RyTt9uG/p\n3ZibgW8xAgMBAAECggEAXdLjg5QJxwBHN4P6EwHoIqKuMKRdfkWOZP4tvN2PXjbj\nAZcAv76NTBEGdJBhD4eYhjob6BPsEqC9B46sVyugblAi9l8QGTF4Qzq36chmbvVF\n5iidN6jh0jAs5yqxZITQQ2EySaH/lO7pWZAWBywZSEYQbmbH2cBPU2M5rf1u5Qvt\nA7sKaNU+TGVK9vt5E1ugwKZZeuVIDj2oeaYi8gxAjJKyr6d1Jo9oZe/Fh43ld65h\ndzpSbhxCKkSl4GDZJMcr+d/1KRSglDWw0L0NAVWl6ouu2HkH6L/Niugm4AYfHzIn\nXr/B6JsT0KFma42V+5+WqrXJ1lNE9hOlzLv08eMLYQKBgQDwdYpGVffBQvHN8ciL\nT6OL48enPm828yY1S2IT67NFYJ9X6NDR0kZA20wlcEtRq2yM2AO1qVF/FrUtGGBy\n9mv1uG+yrNCV2t5G3yhVI9gOBCyrjP/TFt2WCX0SHWu2HByDFHmDWKuQsb6hvTvp\nxlzlQrL8KPM/VN5BeNM514XCYwKBgQDvne5y1LmGY1BJSkOTHBfwv1xUdbEOLW+A\n6PR/bflN96V7aE7RbiuskK1DMdVQ31XwL1GyVciKig9qb8Af2jGXJcrhldTxQkyf\nj1XT5+RKmAYnVCtuVsNhcLQ1kMwHUprMW11ZKhKJNov05wDAQCM1cNyMxCGEbjAN\nmqD0tmoyWwKBgQDeAPdABwDuOnt7U55/GHD7p7pea6NMjWMaU1Xi5HsoM5QKGtYo\n0kWwfYepDStM5MMcqheKsh+fAX0WfGoX2fFE9RqTUUBnCqKrtj7LlINWNX50iIJt\nBrBgZLRHdEhM41ljoBSsMsJ7nc9ODqNxK4X62QDdFIW4VAe7VO1Xeudw1wKBgHzU\njAqqo9RNHOBxne6friEvsAwYHBtEtFg2BFn2kvB5WW6HErisanhGDt14sqalEwJD\nxI3hfs4dypYqja6KX1dcyurmwb7GSWC+rXntztLFjD8k7FNZRAQZUOiu/Hu8HwTj\nfCgdcPamwhbd2VhOkYkfuOZkrwls1f/gVIXoGj8NAoGAJBR6KV2YOP7HwzU4zevC\nOwrO5wcpuu7ddNdMtkdP0Usuga03/4jT+FcyBHAWrzVv737YawEuSnSgwPaO2Guh\nN1RPefb/y+0tjNQHnOtczN5G9kJlnLG7hBrEPnKAlR4dIsovz3tWLdaFbCr1L+w9\nM9h6waMlHOoOv9j18P1iFz0=\n-----END PRIVATE KEY-----\n",
+    "client_email": "merchant-center-batericas@merchant-center-batericars.iam.gserviceaccount.com",
+    "client_id": "107776016816203198659",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/merchant-center-batericas%40merchant-center-batericars.iam.gserviceaccount.com",
+    "universe_domain": "googleapis.com"
+  }
