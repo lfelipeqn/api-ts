@@ -29,6 +29,7 @@ import {
   PromotionServiceApplication
 } from '../types/promotion';
 //import { OrderPriceHistory } from './OrderPriceHistory';
+import { roundToThousand } from '../utils/price';
 
 interface PromotionAttributes extends BasePromotionAttributes {}
 interface PromotionCreationAttributes extends Omit<PromotionAttributes, 'id' | 'created_at' | 'updated_at'> {}
@@ -444,26 +445,31 @@ export class Promotion extends Model<PromotionAttributes, PromotionCreationAttri
   }
 
   calculateDiscountAmount(price: number): number {
-    // Validate price
-    if (price < 0) {
-      throw new Error('Price cannot be negative');
-    }
-
-    switch (this.type) {
-      case 'FIXED':
-        return Math.min(this.discount, price);
-      
-      case 'PERCENTAGE':
-        if (this.discount < 0 || this.discount > 100) {
-          throw new Error('Percentage discount must be between 0 and 100');
-        }
-        return Math.floor((price * this.discount) / 100);
-      
-      default:
-        // This should never happen due to TypeScript, but good to have runtime check
-        throw new Error(`Invalid promotion type: ${this.type}`);
-    }
+  // Validate price
+  if (price < 0) {
+    throw new Error('Price cannot be negative');
   }
+
+  let discountAmount = 0;
+  switch (this.type) {
+    case 'FIXED':
+      discountAmount = Math.min(this.discount, price);
+      break;
+    
+    case 'PERCENTAGE':
+      if (this.discount < 0 || this.discount > 100) {
+        throw new Error('Percentage discount must be between 0 and 100');
+      }
+      discountAmount = (price * this.discount) / 100;
+      break;
+    
+    default:
+      throw new Error(`Invalid promotion type: ${this.type}`);
+  }
+
+  // Round the discount amount to the nearest thousand
+  return roundToThousand(discountAmount);
+}
 
   async isActive(): Promise<boolean> {
     const now = new Date();

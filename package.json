@@ -1,6 +1,6 @@
 {
   "name": "batericars-api-ts",
-  "version": "1.0.0",
+  "version": "3.0.0",
   "scripts": {
     "start": "node dist/index.js",
     "dev": "nodemon src/index.ts",

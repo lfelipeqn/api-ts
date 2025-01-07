@@ -18,6 +18,7 @@ import {
     AppliedPromotion,
     CartStatus
   } from '../types/cart';
+  import { roundToThousand } from '../utils/price';
   
   export class CartDetail extends Model<CartDetailAttributes, CartDetailCreationAttributes> {
     declare id: number;
@@ -172,7 +173,7 @@ import {
         throw new Error(`Required data not found for cart detail ${this.id}`);
       }
     
-      const currentPrice = await product.getCurrentPrice();
+      const currentPrice = roundToThousand(await product.getCurrentPrice());
     
       // Get all active promotions for the product
       const activePromotions = await Promotion.findAll({
@@ -233,8 +234,8 @@ import {
         discount = applicablePromotion.calculateDiscountAmount(currentPrice);
       }
     
-      const subtotal = currentPrice * this.quantity;
-      const totalDiscount = discount * this.quantity;
+      const subtotal = roundToThousand(currentPrice * this.quantity);
+      const totalDiscount = roundToThousand(discount * this.quantity);
     
       const stockValidation = await this.validateStock();
     
@@ -255,7 +256,7 @@ import {
         price: currentPrice,
         discount: totalDiscount,
         subtotal,
-        final_price: subtotal - totalDiscount,
+        final_price: roundToThousand(subtotal - totalDiscount),
         stock_available: stockValidation.valid,
         applied_promotion: appliedPromotion
       };

@@ -1,5 +1,6 @@
 import { Model, DataTypes, Sequelize, Association, fn, col } from 'sequelize';
 import { Product } from './Product';
+import { roundToThousand } from '../utils/price';
 
 interface PriceHistoryAttributes {
   id: number;
@@ -59,7 +60,10 @@ export class PriceHistory extends Model<PriceHistoryAttributes, PriceHistoryCrea
         allowNull: false,
         get() {
           const value = this.getDataValue('price');
-          return value === null ? 0 : Number(value);
+          return value === null ? 0 : roundToThousand(Number(value));
+        },
+        set(value: number) {
+          this.setDataValue('price', roundToThousand(value));
         }
       },
       min_final_price: {
@@ -67,7 +71,10 @@ export class PriceHistory extends Model<PriceHistoryAttributes, PriceHistoryCrea
         allowNull: false,
         get() {
           const value = this.getDataValue('min_final_price');
-          return value === null ? 0 : Number(value);
+          return value === null ? 0 : roundToThousand(Number(value));
+        },
+        set(value: number) {
+          this.setDataValue('min_final_price', roundToThousand(value));
         }
       },
       unit_cost: {
@@ -75,7 +82,10 @@ export class PriceHistory extends Model<PriceHistoryAttributes, PriceHistoryCrea
         allowNull: false,
         get() {
           const value = this.getDataValue('unit_cost');
-          return value === null ? 0 : Number(value);
+          return value === null ? 0 : roundToThousand(Number(value));
+        },
+        set(value: number) {
+          this.setDataValue('unit_cost', roundToThousand(value));
         }
       },
       created_at: DataTypes.DATE,
@@ -85,6 +95,26 @@ export class PriceHistory extends Model<PriceHistoryAttributes, PriceHistoryCrea
       tableName: 'price_histories',
       timestamps: true,
       underscored: true,
+      /*hooks: {
+        beforeCreate: (instance: PriceHistory) => {
+          // Ensure all price fields are rounded to thousands
+          instance.price = roundToThousand(instance.price);
+          instance.min_final_price = roundToThousand(instance.min_final_price);
+          instance.unit_cost = roundToThousand(instance.unit_cost);
+        },
+        beforeUpdate: (instance: PriceHistory) => {
+          // Ensure all price fields are rounded to thousands when updating
+          if (instance.changed('price')) {
+            instance.price = roundToThousand(instance.price);
+          }
+          if (instance.changed('min_final_price')) {
+            instance.min_final_price = roundToThousand(instance.min_final_price);
+          }
+          if (instance.changed('unit_cost')) {
+            instance.unit_cost = roundToThousand(instance.unit_cost);
+          }
+        }
+      },*/
       indexes: [
         {
           fields: ['product_id']

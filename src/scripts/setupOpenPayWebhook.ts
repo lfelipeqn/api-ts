@@ -70,7 +70,7 @@ class OpenPayWebhookManager {
 
         // For OpenPay, the merchant_id is the api_key
         this.merchantId = this.config.merchant_id || this.config.api_key;
-        this.baseUrl = 'https://sandbox-api.openpay.co/v1';
+        this.baseUrl = `${this.config.endpoint}/v1`;
 
         console.log('Configuration loaded:', {
             baseUrl: this.baseUrl,
