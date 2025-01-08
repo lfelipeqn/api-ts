@@ -7,7 +7,7 @@ import { apiKeyMiddleware, ApiKeyRequest } from '../middleware/apiKey.middleware
 
 const router = Router();
 
-// Validation schema for email requests
+// Validation schemas
 const sendEmailSchema = z.object({
   to: z.union([z.string().email(), z.array(z.string().email())]),
   subject: z.string().min(1),
@@ -15,16 +15,47 @@ const sendEmailSchema = z.object({
   data: z.record(z.any()).optional()
 });
 
-if (process.env.NODE_ENV === 'development') {
-  const testEmailSchema = z.object({
-    email: z.string().email('Invalid email format')
-  });
+const testEmailSchema = z.object({
+  email: z.string().email('Invalid email format')
+});
 
+// Production email endpoint - requires both X-API-Key and SendGrid auth
+router.post('/send', apiKeyMiddleware, async (req: ApiKeyRequest, res) => {
+  try {
+    const { to, subject, htmlContent, data = {} } = sendEmailSchema.parse(req.body);
+
+    const emailService = EmailService.getInstance();
+    await emailService.sendCustomEmail(to, subject, htmlContent, data);
+
+    res.json({
+      status: 'success',
+      message: 'Email sent successfully'
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Validation failed',
+        errors: error.errors
+      });
+    }
+
+    console.error('Error sending email:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to send email'
+    });
+  }
+});
+
+// Development test endpoint - only requires SendGrid auth
+if (process.env.NODE_ENV === 'development') {
   router.post('/test', async (req, res) => {
     try {
       const { email } = testEmailSchema.parse(req.body);
-      const emailService = EmailService.getInstance();
       
+      // No API key check in development
+      const emailService = EmailService.getInstance();
       await emailService.sendTestEmail(email);
       
       res.json({
@@ -54,33 +85,5 @@ if (process.env.NODE_ENV === 'development') {
     }
   });
 }
-// Use API key middleware instead of auth middleware
-router.post('/send', apiKeyMiddleware, async (req: ApiKeyRequest, res) => {
-  try {
-    const { to, subject, htmlContent, data = {} } = sendEmailSchema.parse(req.body);
-
-    const emailService = EmailService.getInstance();
-    await emailService.sendCustomEmail(to, subject, htmlContent, data);
-
-    res.json({
-      status: 'success',
-      message: 'Email sent successfully'
-    });
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Validation failed',
-        errors: error.errors
-      });
-    }
-
-    console.error('Error sending email:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to send email'
-    });
-  }
-});
 
 export default router;

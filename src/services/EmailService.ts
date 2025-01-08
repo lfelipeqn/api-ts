@@ -10,10 +10,14 @@ export class EmailService {
 
   private constructor() {
     this.defaultFromName = process.env.MAIL_FROM_NAME || 'Batericars';
-    this.defaultFromAddress = process.env.MAIL_FROM_ADDRESS || 'batericars@batericars.com.co';
+    this.defaultFromAddress = process.env.MAIL_FROM_ADDRESS || 'noresponder@batericars.com.co';
+    
+    if (!process.env.MAIL_SENDDESK_API) {
+      throw new Error('MAIL_SENDDESK_API is required for SendGrid integration');
+    }
     
     this.sendGrid = new MailService();
-    this.sendGrid.setApiKey(process.env.MAIl_SENDDESK_API || '');
+    this.sendGrid.setApiKey(process.env.MAIL_SENDDESK_API);
   }
 
   public static getInstance(): EmailService {
