@@ -15,6 +15,45 @@ const sendEmailSchema = z.object({
   data: z.record(z.any()).optional()
 });
 
+if (process.env.NODE_ENV === 'development') {
+  const testEmailSchema = z.object({
+    email: z.string().email('Invalid email format')
+  });
+
+  router.post('/test', async (req, res) => {
+    try {
+      const { email } = testEmailSchema.parse(req.body);
+      const emailService = EmailService.getInstance();
+      
+      await emailService.sendTestEmail(email);
+      
+      res.json({
+        status: 'success',
+        message: 'Test email sent successfully',
+        details: {
+          recipient: email,
+          environment: process.env.NODE_ENV,
+          timestamp: new Date().toISOString()
+        }
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          status: 'error',
+          message: 'Validation failed',
+          errors: error.errors
+        });
+      }
+
+      console.error('Error sending test email:', error);
+      res.status(500).json({
+        status: 'error',
+        message: 'Failed to send test email',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  });
+}
 // Use API key middleware instead of auth middleware
 router.post('/send', apiKeyMiddleware, async (req: ApiKeyRequest, res) => {
   try {
