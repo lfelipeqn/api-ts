@@ -210,6 +210,13 @@ router.get('/agencies', async (req, res) => {
               name: data.address.city.department.name
             } : null
           }
+        } : null,
+        address: data.address ? {
+          id: data.address.id,
+          name: data.address.name,
+          detail: data.address.detail,
+          neighborhood: data.address.neighborhood,
+          type: data.address.type
         } : null
       };
     });
