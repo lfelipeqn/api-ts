@@ -47,6 +47,14 @@ router.get('/categories', async (req, res) => {
 router.get('/categories/:id/brands', async (req, res) => {
   try {
     const categoryId = parseInt(req.params.id);
+    
+    // Add validation for categoryId
+    if (isNaN(categoryId)) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Invalid category ID format'
+      });
+    }
 
     const brands = await Brand.findAll({
       include: [
@@ -90,11 +98,13 @@ router.get('/categories/:id/brands', async (req, res) => {
       status: 'success',
       data: brandsWithImages
     });
+
   } catch (error) {
     console.error('Error fetching brands for category:', error);
     res.status(500).json({
       status: 'error',
-      message: error instanceof Error ? error.message : 'Error fetching brands'
+      message: error instanceof Error ? error.message : 'Error fetching brands',
+      details: process.env.NODE_ENV === 'development' ? error : undefined
     });
   }
 });

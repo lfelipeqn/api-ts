@@ -29,9 +29,17 @@ router.post('/send', apiKeyMiddleware, async (req: ApiKeyRequest, res) => {
 
     res.json({
       status: 'success',
-      message: 'Email sent successfully'
+      message: 'Email sent successfully',
+      timestamp: new Date().toISOString()
     });
-  } catch (error) {
+  } catch (error: any) {
+    console.error('Email route error:', {
+      name: error.name,
+      message: error.message,
+      sendGridErrors: error.response?.body?.errors,
+      timestamp: new Date().toISOString()
+    });
+
     if (error instanceof z.ZodError) {
       return res.status(400).json({
         status: 'error',
@@ -40,15 +48,15 @@ router.post('/send', apiKeyMiddleware, async (req: ApiKeyRequest, res) => {
       });
     }
 
-    console.error('Error sending email:', error);
     res.status(500).json({
       status: 'error',
-      message: 'Failed to send email'
+      message: error.response?.body?.errors?.[0]?.message || error.message || 'Failed to send email'
     });
   }
 });
 
 // Development test endpoint - only requires SendGrid auth
+/*
 if (process.env.NODE_ENV === 'development') {
   router.post('/test', async (req, res) => {
     try {
@@ -84,6 +92,6 @@ if (process.env.NODE_ENV === 'development') {
       });
     }
   });
-}
+}*/
 
 export default router;
