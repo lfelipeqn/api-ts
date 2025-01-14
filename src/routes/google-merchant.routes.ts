@@ -72,7 +72,7 @@ router.post('/products/:id', async (req: AuthenticatedRequest, res) => {
 
     res.json({
       status: 'success',
-      message: `Product ${product.reference} uploaded successfully`
+      message: `Product ${product.id} uploaded successfully`
     });
   } catch (error) {
     console.error('Error uploading product:', error);

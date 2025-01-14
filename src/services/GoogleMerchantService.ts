@@ -4,9 +4,18 @@ import { google } from 'googleapis';
 import { Product } from '../models/Product';
 import { PriceHistory } from '../models/PriceHistory';
 import { Brand } from '../models/Brand';
-import { File } from '../models/File';
 import { Promotion } from '../models/Promotion';
-import { Sequelize, Op } from 'sequelize';
+import { DataSheet } from '../models/DataSheet';
+import { DataSheetField } from '../models/DataSheetField';
+import { Op, QueryTypes } from 'sequelize';
+import { getSequelize } from '../config/database';
+import { roundToThousand } from '../utils/price';
+
+interface ProductProductDetail {
+  sectionName: string;
+  attributeName: string;
+  attributeValue: string;
+}
 
 interface GoogleProductData {
   offerId: string;
@@ -21,7 +30,6 @@ interface GoogleProductData {
   availability: string;
   condition: string;
   googleProductCategory: string;
-  gtin?: string;
   brand: string;
   price: {
     value: string;
@@ -40,20 +48,34 @@ interface GoogleProductData {
       currency: string;
     };
   }>;
+  productDetails?: ProductProductDetail[];
+  customAttributes?: Array<{
+    name: string;
+    value: string;
+  }>;
+}
+
+interface FileQueryResult {
+  id: number;
+  name: string;
+  location: string;
+  is_principal: number;
 }
 
 export class GoogleMerchantService {
   private static instance: GoogleMerchantService;
   private content: any;
-  private readonly merchantId: string = '5086070867';
+  private readonly merchantId: string;
   private readonly targetCountry: string = 'CO';
   private readonly contentLanguage: string = 'es';
   private readonly projectId: string;
   private readonly baseUrl: string;
+  private readonly sequelize = getSequelize();
 
   private constructor() {
+    this.merchantId = process.env.GOOGLE_SHOPPING_MERCHANT_ID || '';
     this.projectId = process.env.GOOGLE_CLOUD_PROJECT_ID || '';
-    this.baseUrl = process.env.APP_URL || 'https://batericars.com.co';
+    this.baseUrl = /*process.env.APP_URL || */'https://batericars.com.co';
 
     const auth = new google.auth.GoogleAuth({
       keyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS,
@@ -74,58 +96,142 @@ export class GoogleMerchantService {
   }
 
   private async formatProductData(product: Product): Promise<GoogleProductData> {
-    // Load related data
-    await product.reload({
+    // Get the base product information with brand and technical data
+    const baseProduct = await Product.findByPk(product.id, {
       include: [
         { model: Brand, as: 'brand' },
-        { model: File, as: 'files' },
-        { model: PriceHistory, as: 'priceHistories' }
+        { 
+          model: DataSheet,
+          as: 'dataSheets',
+          include: [{
+            model: DataSheetField,
+            as: 'dataSheetFields',
+            through: {
+              attributes: ['value']
+            }
+          }]
+        }
       ]
     });
 
-    // Get current price and check if there's a promotion
-    const currentPrice = await product.getCurrentPrice();
-    const pricingInfo = await product.getInfo();
-    
-    // Get product images
-    const images = await File.getByProductId(product.id);
-    const processedImages = await Promise.all(
-      images.map(file => new File().processFileDetails(file))
-    );
-    const principalImage = processedImages.find(img => img.products_files?.principal);
-    
+    if (!baseProduct) {
+      throw new Error(`Product ${product.id} not found`);
+    }
+
+    // Get current price and round it
+    const currentPrice = roundToThousand(await product.getCurrentPrice());
+
+    const productDetails: ProductProductDetail[] = [];
+    if (baseProduct.dataSheets && baseProduct.dataSheets.length > 0) {
+      const dataSheet = baseProduct.dataSheets[0];
+      dataSheet.dataSheetFields?.forEach(field => {
+        if (field.DataSheetValue?.value) {
+          productDetails.push({
+            sectionName: "Ficha Técnica",
+            attributeName: field.field_name,
+            attributeValue: field.DataSheetValue.value
+          });
+        }
+      });
+    }
     // Format base product data
     const productData: GoogleProductData = {
       offerId: product.id.toString(),
-      title: product.display_name,
+      title: `${product.display_name} - ${product.reference}`,
       description: product.description || product.display_name,
-      link: `${this.baseUrl}/productos/${product.reference}`,
-      imageLink: principalImage?.url || '',
-      additionalImageLinks: processedImages
-        .filter(img => !img.products_files?.principal)
-        .map(img => img.url)
-        .slice(0, 10), // Google allows up to 10 additional images
+      link: `${this.baseUrl}/productos/detalle/${product.id}`,
+      imageLink: await this.getPrincipalImageUrl(product),
+      additionalImageLinks: await this.getAdditionalImageUrls(product),
       contentLanguage: this.contentLanguage,
       targetCountry: this.targetCountry,
       channel: 'online',
       availability: await this.getAvailabilityStatus(product),
       condition: 'new',
       googleProductCategory: '888', // Auto Parts category
-      brand: product.brand?.name || 'Generic',
+      brand: baseProduct.brand?.name || 'Generic',
       price: {
         value: currentPrice.toString(),
         currency: 'COP'
       },
-      identifierExists: true
+      identifierExists: true,
+      productDetails,
+      customAttributes: [{
+        name: 'reference',
+        value: product.reference
+      }],
+      shipping: [{
+        country: 'CO',
+        service: 'Standard shipping',
+        price: {
+          value: '0',
+          currency: 'COP'
+        }
+      }]
     };
 
-    // Get active promotions and calculate sale price if applicable
-    const now = Sequelize.literal('CURRENT_TIMESTAMP');
-    const promotions = await Promotion.findAll({
+    // Add promotions if they exist
+    const activePromotion = await this.getActivePromotion(product.id);
+    if (activePromotion) {
+      const discountedPrice = this.calculateDiscountedPrice(currentPrice, activePromotion);
+      productData.salePrice = {
+        value: discountedPrice.toString(),
+        currency: 'COP'
+      };
+    }
+
+    return productData;
+  }
+
+  private async getAvailabilityStatus(product: Product): Promise<string> {
+    const stock = await product.getCurrentStock();
+    return stock > 0 ? 'in_stock' : 'out_of_stock';
+  }
+
+  private async getPrincipalImageUrl(product: Product): Promise<string> {
+    const files = await this.sequelize.query<FileQueryResult>(
+      `SELECT f.*, CAST(pf.principal AS UNSIGNED) as is_principal 
+       FROM files f 
+       JOIN products_files pf ON f.id = pf.file_id 
+       WHERE pf.product_id = :productId AND pf.principal = true
+       LIMIT 1`,
+      {
+        replacements: { productId: product.id },
+        type: QueryTypes.SELECT
+      }
+    );
+
+    if (files && files.length > 0) {
+      const cdnUrl = process.env.CDN_URL || `https://storage.googleapis.com/${process.env.GOOGLE_CLOUD_STORAGE_BUCKET}`;
+      const file = files[0];
+      return `${cdnUrl}/${file.location}/${file.name}`;
+    }
+    
+    return ''; // Return empty string if no principal image found
+  }
+
+  private async getAdditionalImageUrls(product: Product): Promise<string[]> {
+    const files = await this.sequelize.query<FileQueryResult>(
+      `SELECT f.*, CAST(pf.principal AS UNSIGNED) as is_principal 
+       FROM files f 
+       JOIN products_files pf ON f.id = pf.file_id 
+       WHERE pf.product_id = :productId AND pf.principal = false
+       LIMIT 10`,
+      {
+        replacements: { productId: product.id },
+        type: QueryTypes.SELECT
+      }
+    );
+
+    const cdnUrl = process.env.CDN_URL || `https://storage.googleapis.com/${process.env.GOOGLE_CLOUD_STORAGE_BUCKET}`;
+    return files.map((file: FileQueryResult) => `${cdnUrl}/${file.location}/${file.name}`);
+  }
+
+  private async getActivePromotion(productId: number) {
+    return Promotion.findOne({
       where: {
         state: 'ACTIVE',
         [Op.and]: [
-          Sequelize.literal(`
+          this.sequelize.literal(`
             (start_date IS NULL OR start_date <= NOW())
             AND
             (end_date IS NULL OR end_date >= NOW())
@@ -135,47 +241,22 @@ export class GoogleMerchantService {
       include: [{
         model: Product,
         as: 'products',
-        where: { id: product.id },
+        where: { id: productId },
         required: true,
         through: { attributes: [] }
       }],
       order: [['created_at', 'DESC']]
     });
-
-    if (promotions.length > 0) {
-      const promotion = promotions[0];
-      let discountAmount = 0;
-
-      if (promotion.type === 'PERCENTAGE') {
-        discountAmount = (currentPrice * promotion.discount) / 100;
-      } else {
-        discountAmount = promotion.discount;
-      }
-
-      const discountedPrice = Math.max(0, currentPrice - discountAmount);
-
-      productData.salePrice = {
-        value: discountedPrice.toString(),
-        currency: 'COP'
-      };
-    }
-
-    // Add shipping information
-    productData.shipping = [{
-      country: 'CO',
-      service: 'Standard shipping',
-      price: {
-        value: '0',
-        currency: 'COP'
-      }
-    }];
-
-    return productData;
   }
 
-  private async getAvailabilityStatus(product: Product): Promise<string> {
-    const stock = await product.getCurrentStock();
-    return stock > 0 ? 'in_stock' : 'out_of_stock';
+  private calculateDiscountedPrice(currentPrice: number, promotion: Promotion): number {
+    let discountAmount = 0;
+    if (promotion.type === 'PERCENTAGE') {
+      discountAmount = (currentPrice * promotion.discount) / 100;
+    } else {
+      discountAmount = promotion.discount;
+    }
+    return Math.max(0, roundToThousand(currentPrice - discountAmount));
   }
 
   public async uploadProduct(product: Product): Promise<void> {
@@ -187,9 +268,9 @@ export class GoogleMerchantService {
         requestBody: productData
       });
 
-      console.log(`Successfully uploaded product ${product.reference} to Google Merchant Center`);
+      console.log(`Successfully uploaded product ${product.id} to Google Merchant Center`);
     } catch (error) {
-      console.error(`Error uploading product ${product.reference}:`, error);
+      console.error(`Error uploading product ${product.id}:`, error);
       throw error;
     }
   }
@@ -230,21 +311,26 @@ export class GoogleMerchantService {
     failed: number;
     errors: Array<{reference: string; error: string}>
   }> {
-    const { Product } = require('../models/Product');
     const products = await Product.findAll({
-      where: { state: true }
+      where: { state: true },
+      order: [['id', 'ASC']]
     });
 
     let success = 0;
     let failed = 0;
     const errors: Array<{reference: string; error: string}> = [];
 
+    console.log(`Starting upload of ${products.length} products...`);
+
     for (const product of products) {
       try {
+        console.log(`Processing product ${product.id} - ${product.reference}...`);
         await this.uploadProduct(product);
         success++;
+        console.log(`Successfully uploaded product ${product.id} - ${product.reference}`);
       } catch (error) {
         failed++;
+        console.error(`Failed to upload product ${product.id} - ${product.reference}:`, error);
         errors.push({
           reference: product.reference,
           error: error instanceof Error ? error.message : 'Unknown error'
@@ -252,7 +338,10 @@ export class GoogleMerchantService {
       }
     }
 
-    return { success, failed, errors };
+    const response = { success, failed, errors };
+    console.log('Upload process completed:', response);
+    
+    return response;
   }
 
   public async syncInventoryAndPrices(): Promise<{
@@ -260,7 +349,6 @@ export class GoogleMerchantService {
     failed: number;
     errors: Array<{reference: string; error: string}>
   }> {
-    const { Product } = require('../models/Product');
     const products = await Product.findAll({
       where: { state: true }
     });

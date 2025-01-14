@@ -468,7 +468,12 @@ export class Promotion extends Model<PromotionAttributes, PromotionCreationAttri
   }
 
   // Round the discount amount to the nearest thousand
-  return roundToThousand(discountAmount);
+   // Calculate final price with discount
+   const finalPrice = Math.max(0, price - discountAmount);
+   // Round the final price to nearest thousand
+   const roundedFinalPrice = roundToThousand(finalPrice);
+   // Recalculate the actual discount amount based on rounded final price
+   return price - roundedFinalPrice;
 }
 
   async isActive(): Promise<boolean> {
