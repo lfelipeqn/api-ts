@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { ProductLine } from '../models/ProductLine';
 import { Brand } from '../models/Brand';
-import { Op, Includeable } from 'sequelize';
+import { Op, Includeable, QueryTypes } from 'sequelize';
 import { getSequelize } from '../config/database';
 import { Agency } from '../models/Agency';
 import { Department } from '../models/Department';
@@ -11,6 +11,8 @@ import { File } from '../models/File';
 import { PaymentMethodConfig } from '../models/PaymentMethodConfig';
 import { GatewayConfig } from '../models/GatewayConfig';
 import { Product } from '../models/Product';
+import { Cache } from '../services/Cache';
+
 
 const router = Router();
 const sequelize = getSequelize();
@@ -47,68 +49,75 @@ router.get('/categories', async (req, res) => {
 router.get('/categories/:id/brands', async (req, res) => {
   try {
     const categoryId = parseInt(req.params.id);
+    const cache = Cache.getInstance();
     
-    // Add validation for categoryId
-    if (isNaN(categoryId)) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Invalid category ID format'
-      });
-    }
-
-    const brands = await Brand.findAll({
-      include: [
-        {
-          model: ProductLine,
-          as: 'productLines',
-          where: { id: categoryId },
-          attributes: [],
-          through: { attributes: [] }
-        },
-        {
-          model: File,
-          as: 'file',
-          required: false
-        },
-        {
-          model: Product,
-          as: 'products',
-          where: { state: true },
-          attributes: [],
-          required: true
-        }
-      ],
-      attributes: ['id', 'name', 'file_id'],
-      order: [['name', 'ASC']]
-    });
-
-    if (brands.length === 0) {
+    // Try to get from cache first
+    const cacheKey = `category:${categoryId}:brands`;
+    const cachedBrands = await cache.get<any>(cacheKey);
+    
+    if (cachedBrands) {
       return res.json({
         status: 'success',
-        data: [],
-        message: 'No brands found for this category'
+        data: cachedBrands
       });
     }
 
-    const brandsWithImages = await Promise.all(
-      brands.map(brand => brand.toDetailedJSON())
-    );
+    // If not in cache, get from view
+    const sequelize = getSequelize();
+    const brands = await sequelize.query(`
+      SELECT 
+        cb.*,
+        f.name as file_name,
+        f.location as file_location
+      FROM category_brands cb
+      LEFT JOIN files f ON f.id = cb.file_id
+      WHERE cb.product_line_id = :categoryId
+      ORDER BY cb.brand_name ASC
+    `, {
+      replacements: { categoryId },
+      type: QueryTypes.SELECT
+    });
+
+    // Process brands and add image URLs
+    const processedBrands = await Promise.all(brands.map(async (brand: any) => {
+      let image;
+      if (brand.file_id) {
+        const cdnUrl = process.env.CDN_URL || `https://storage.googleapis.com/${process.env.GOOGLE_CLOUD_STORAGE_BUCKET}`;
+        image = {
+          url: `${cdnUrl}/${brand.file_location}/${brand.file_name}`,
+          sizes: {
+            xs: `${cdnUrl}/${brand.file_location}/xs_${brand.file_name}`,
+            sm: `${cdnUrl}/${brand.file_location}/sm_${brand.file_name}`,
+            md: `${cdnUrl}/${brand.file_location}/md_${brand.file_name}`,
+            lg: `${cdnUrl}/${brand.file_location}/lg_${brand.file_name}`,
+            original: `${cdnUrl}/${brand.file_location}/${brand.file_name}`
+          }
+        };
+      }
+
+      return {
+        id: brand.brand_id,
+        name: brand.brand_name,
+        image: image || undefined,
+        active_products_count: brand.active_products_count
+      };
+    }));
+
+    // Cache for 5 minutes
+    await cache.set(cacheKey, processedBrands, 300);
 
     res.json({
       status: 'success',
-      data: brandsWithImages
+      data: processedBrands
     });
-
   } catch (error) {
     console.error('Error fetching brands for category:', error);
     res.status(500).json({
       status: 'error',
-      message: error instanceof Error ? error.message : 'Error fetching brands',
-      details: process.env.NODE_ENV === 'development' ? error : undefined
+      message: error instanceof Error ? error.message : 'Error fetching brands'
     });
   }
 });
-
 // GET /api/brands - Get all brands (optionally filtered by categoryId query parameter)
 router.get('/brands', async (req, res) => {
   try {

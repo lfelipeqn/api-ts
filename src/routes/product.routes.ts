@@ -15,11 +15,25 @@ import { FileWithDetails, FileWithPrincipal } from '../types/file';
 import { Promotion } from '../models/Promotion';
 import { PromotionProducts } from '../models/PromotionProduct';
 import { BrandWithImage } from '../types/brand';
+import { Cache } from '../services/Cache';
+import { getSequelize } from '../config/database';
 
 
 interface ProductImagesResponse {
   principal: FileWithDetails | undefined;
   others: FileWithDetails[];
+}
+
+interface FilterData {
+  field_id: number;
+  field_name: string;
+  type: string;
+  predefined_values: string | null;
+  current_values: string | null;
+}
+
+interface ProductCount {
+  count: string;  // MySQL COUNT returns string in raw queries
 }
 
 const router = Router();
@@ -830,26 +844,90 @@ router.get('/products/:id/prices', async (req, res) => {
 
 router.get('/product-lines/:id/filters', async (req, res) => {
   try {
-    const productLine = await ProductLine.findByPk(req.params.id);
-    
-    if (!productLine) {
-      return res.status(404).json({
+    const productLineId = parseInt(req.params.id);
+    if (isNaN(productLineId)) {
+      return res.status(400).json({
         status: 'error',
-        message: 'Product line not found'
+        message: 'Invalid product line ID'
       });
     }
 
-    const filters = await productLine.getFilterableFields();
+    // Try to get from cache first
+    const cache = Cache.getInstance();
+    const cacheKey = `product-line:${productLineId}:filters`;
     
+    const cachedFilters = await cache.get<any>(cacheKey);
+    if (cachedFilters) {
+      return res.json({
+        status: 'success',
+        data: cachedFilters
+      });
+    }
+
+    // If not in cache, query the view
+    const sequelize = getSequelize();
+    const filters = await sequelize.query<FilterData>(`
+      SELECT 
+        field_id,
+        field_name,
+        type,
+        predefined_values,
+        current_values
+      FROM product_line_filters
+      WHERE product_line_id = :productLineId
+    `, {
+      replacements: { productLineId },
+      type: QueryTypes.SELECT
+    });
+
+    // Process the filters
+    const processedFilters = filters.map(filter => {
+      // Get values from either current_values or predefined_values
+      const valuesString = filter.current_values || filter.predefined_values;
+      let values: string[] = [];
+
+      if (valuesString) {
+        values = valuesString
+          .split(',')
+          .map(v => v.trim())
+          .filter(v => v !== '')
+          // Remove duplicates and sort
+          .filter((value, index, self) => self.indexOf(value) === index)
+          .sort();
+      }
+
+      return {
+        id: filter.field_id,
+        field_name: filter.field_name,
+        type: filter.type,
+        values
+      };
+    })
+    // Only return filters that have values
+    .filter(filter => filter.values.length > 0);
+
+    // Cache the processed results for 5 minutes
+    if (processedFilters.length > 0) {
+      await cache.set(cacheKey, processedFilters, 300);
+    }
+
     res.json({
       status: 'success',
-      data: filters
+      data: processedFilters,
+      meta: {
+        count: processedFilters.length,
+        timestamp: new Date().toISOString()
+      }
     });
+
   } catch (error) {
     console.error('Error getting product line filters:', error);
     res.status(500).json({
       status: 'error',
-      message: 'Failed to get filters'
+      message: 'Failed to get filters',
+      details: process.env.NODE_ENV === 'development' ? 
+        (error instanceof Error ? error.message : 'Unknown error') : 
+        undefined
     });
   }
 });
