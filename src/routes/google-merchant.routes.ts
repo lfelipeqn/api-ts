@@ -4,6 +4,7 @@ import { Router } from 'express';
 import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { GoogleMerchantService } from '../services/GoogleMerchantService';
 import { Product } from '../models/Product';
+import { Cache } from '../services/Cache';
 
 const router = Router();
 
@@ -12,47 +13,57 @@ router.use(authMiddleware);
 
 // Upload all products to Google Merchant Center
 router.post('/upload-all', async (req: AuthenticatedRequest, res) => {
+  res.json({
+    status: 'success',
+    message: 'Upload process started',
+    data: {
+      started_at: new Date().toISOString(),
+      status: 'processing'
+    }
+  });
+
   try {
     const merchantService = GoogleMerchantService.getInstance();
-    const result = await merchantService.uploadAllProducts();
+    const result = await merchantService.uploadAllProducts(progress => {
+      console.log(`Upload progress: ${progress.current}/${progress.total} products processed`);
+    });
 
-    res.json({
-      status: 'success',
-      data: {
-        uploaded: result.success,
-        failed: result.failed,
-        errors: result.errors
-      }
-    });
+    console.log('Upload completed:', result);
   } catch (error) {
-    console.error('Error uploading products to Google Merchant:', error);
-    res.status(500).json({
-      status: 'error',
-      message: error instanceof Error ? error.message : 'Failed to upload products'
-    });
+    console.error('Background upload error:', error);
   }
 });
 
 // Sync inventory and prices for all products
 router.post('/sync', async (req: AuthenticatedRequest, res) => {
+  // Send initial response quickly
+  res.json({
+    status: 'success',
+    message: 'Sync process started',
+    data: {
+      started_at: new Date().toISOString(),
+      status: 'processing'
+    }
+  });
+
+  // Continue processing in background
   try {
     const merchantService = GoogleMerchantService.getInstance();
-    const result = await merchantService.syncInventoryAndPrices();
+    const cache = Cache.getInstance();
+    
+    const result = await merchantService.syncInventoryAndPrices(progress => {
+      console.log(`Sync progress: ${progress.current}/${progress.total} products processed`);
+    });
 
-    res.json({
-      status: 'success',
-      data: {
-        updated: result.success,
-        failed: result.failed,
-        errors: result.errors
-      }
-    });
+    await Promise.all([
+      cache.clearPattern('product:*'),
+      cache.clearPattern('category:*'),
+      cache.clearPattern('product-line:*')
+    ]);
+
+    console.log('Sync completed:', result);
   } catch (error) {
-    console.error('Error syncing with Google Merchant:', error);
-    res.status(500).json({
-      status: 'error',
-      message: error instanceof Error ? error.message : 'Failed to sync with Google Merchant'
-    });
+    console.error('Background sync error:', error);
   }
 });
 

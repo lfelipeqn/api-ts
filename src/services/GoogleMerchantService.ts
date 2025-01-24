@@ -10,6 +10,9 @@ import { DataSheetField } from '../models/DataSheetField';
 import { Op, QueryTypes } from 'sequelize';
 import { getSequelize } from '../config/database';
 import { roundToThousand } from '../utils/price';
+import { Cache } from './Cache';
+import path from 'path';
+import fs from 'fs';
 
 interface ProductProductDetail {
   sectionName: string;
@@ -75,18 +78,46 @@ export class GoogleMerchantService {
   private constructor() {
     this.merchantId = process.env.GOOGLE_SHOPPING_MERCHANT_ID || '';
     this.projectId = process.env.GOOGLE_CLOUD_PROJECT_ID || '';
-    this.baseUrl = /*process.env.APP_URL || */'https://batericars.com.co';
+    this.baseUrl = 'https://batericars.com.co';
 
-    const auth = new google.auth.GoogleAuth({
-      keyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS,
-      scopes: ['https://www.googleapis.com/auth/content']
-    });
+    // Get the absolute path to the credentials file
+    const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    
+    if (!credentialsPath) {
+      throw new Error('GOOGLE_APPLICATION_CREDENTIALS environment variable is not set');
+    }
 
-    this.content = google.content({
-      version: 'v2.1',
-      auth
-    });
-  }
+    try {
+      
+      // Check if file exists
+      if (!fs.existsSync(credentialsPath)) {
+        throw new Error(`Credentials file not found at ${credentialsPath}`);
+      }
+
+      // Load credentials from file
+      const credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
+      
+      const auth = new google.auth.GoogleAuth({
+        credentials,
+        scopes: ['https://www.googleapis.com/auth/content']
+      });
+
+      this.content = google.content({
+        version: 'v2.1',
+        auth
+      });
+    } catch (error) {
+      console.error('Error initializing Google Merchant Service:', {
+        error,
+        credentialsPath,
+        workspaceRoot: process.cwd(),
+        envVars: {
+          GOOGLE_APPLICATION_CREDENTIALS: process.env.GOOGLE_APPLICATION_CREDENTIALS
+        }
+      });
+      throw new Error(`Failed to initialize Google Merchant Service: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+}
 
   public static getInstance(): GoogleMerchantService {
     if (!GoogleMerchantService.instance) {
@@ -278,14 +309,36 @@ export class GoogleMerchantService {
   public async updateProduct(product: Product): Promise<void> {
     try {
       const productData = await this.formatProductData(product);
+      const formattedProductId = `online:es:CO:${product.id}`;
       
+      // Remove offerId from update data
+      const updateData = {
+        price: productData.price,
+        availability: productData.availability,
+        ...(productData.salePrice && { salePrice: productData.salePrice })
+      };
+  
+      // Create the URL with updateMask parameter
+      const updateMask = ['price', 'availability'];
+      if (productData.salePrice) {
+        updateMask.push('salePrice');
+      }
+  
       await this.content.products.update({
         merchantId: this.merchantId,
-        productId: product.id.toString(),
-        requestBody: productData
+        productId: formattedProductId,
+        updateMask: updateMask.join(','),
+        requestBody: updateData
       });
-
-      console.log(`Successfully updated product ${product.id} in Google Merchant Center`);
+  
+      const cache = Cache.getInstance();
+      await Promise.all([
+        cache.del(`product:${product.id}`),
+        cache.del(`product:${product.id}:price`),
+        cache.del(`product:${product.id}:stock`)
+      ]);
+  
+      console.log(`Successfully updated product ${product.id} in Google Merchant Center with fields:`, updateMask);
     } catch (error) {
       console.error(`Error updating product ${product.id}:`, error);
       throw error;
@@ -306,7 +359,9 @@ export class GoogleMerchantService {
     }
   }
 
-  public async uploadAllProducts(): Promise<{
+  public async uploadAllProducts(
+    onProgress?: (progress: { current: number; total: number }) => void
+  ): Promise<{
     success: number;
     failed: number;
     errors: Array<{reference: string; error: string}>
@@ -315,16 +370,15 @@ export class GoogleMerchantService {
       where: { state: true },
       order: [['id', 'ASC']]
     });
-
+  
     let success = 0;
     let failed = 0;
     const errors: Array<{reference: string; error: string}> = [];
-
-    console.log(`Starting upload of ${products.length} products...`);
-
-    for (const product of products) {
+    const total = products.length;
+  
+    for (let i = 0; i < products.length; i++) {
+      const product = products[i];
       try {
-        console.log(`Processing product ${product.id} - ${product.reference}...`);
         await this.uploadProduct(product);
         success++;
         console.log(`Successfully uploaded product ${product.id} - ${product.reference}`);
@@ -336,15 +390,20 @@ export class GoogleMerchantService {
           error: error instanceof Error ? error.message : 'Unknown error'
         });
       }
+  
+      if (onProgress) {
+        onProgress({ current: i + 1, total });
+      }
+  
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
-
-    const response = { success, failed, errors };
-    console.log('Upload process completed:', response);
-    
-    return response;
+  
+    return { success, failed, errors };
   }
 
-  public async syncInventoryAndPrices(): Promise<{
+  public async syncInventoryAndPrices(
+    onProgress?: (progress: { current: number; total: number }) => void
+  ): Promise<{
     success: number;
     failed: number;
     errors: Array<{reference: string; error: string}>
@@ -352,12 +411,14 @@ export class GoogleMerchantService {
     const products = await Product.findAll({
       where: { state: true }
     });
-
+  
     let success = 0;
     let failed = 0;
     const errors: Array<{reference: string; error: string}> = [];
-
-    for (const product of products) {
+    const total = products.length;
+  
+    for (let i = 0; i < products.length; i++) {
+      const product = products[i];
       try {
         await this.updateProduct(product);
         success++;
@@ -368,8 +429,15 @@ export class GoogleMerchantService {
           error: error instanceof Error ? error.message : 'Unknown error'
         });
       }
+  
+      if (onProgress) {
+        onProgress({ current: i + 1, total });
+      }
+  
+      // Add small delay between requests to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
-
+  
     return { success, failed, errors };
   }
 }
