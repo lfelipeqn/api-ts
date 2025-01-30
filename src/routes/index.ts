@@ -12,7 +12,7 @@ import webRoutes from './web.routes';
 import accountRoutes from './account.routes';
 import emailRoutes from './email.routes';
 import googleMerchantRoutes from './google-merchant.routes';
-
+import socialAuthRoutes from './social-auth.routes';
 
 const router = Router();
 
@@ -29,6 +29,7 @@ router.use('/api', apiRouter);
 // Add routes to API router
 apiRouter.use('/',webRoutes);
 apiRouter.use('/auth', authRoutes);
+apiRouter.use('/auth/social', socialAuthRoutes);
 apiRouter.use('/', productRoutes); // This will preserve existing product routes under /api
 apiRouter.use('/', cartRoutes);
 apiRouter.use('/payments-config', paymentConfigRoutes);
