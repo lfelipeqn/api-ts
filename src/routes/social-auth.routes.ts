@@ -167,10 +167,28 @@ router.post('/google', async (req: Request, res: Response) => {
 router.post('/facebook', async (req: Request, res: Response) => {
   try {
     const { accessToken, callbackUrl } = req.body;
+    
+    if (!accessToken) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Missing access token'
+      });
+    }
 
     const userData = await verifyFacebookUserData(accessToken);
     if (!userData) {
-      throw new Error('Invalid Facebook token');
+      return res.status(401).json({
+        status: 'error',
+        message: 'Invalid Facebook token'
+      });
+    }
+
+    // Validate email existence
+    if (!userData.email) {
+      return res.status(403).json({
+        status: 'error',
+        message: 'Email permission required'
+      });
     }
 
     // Verify required permissions

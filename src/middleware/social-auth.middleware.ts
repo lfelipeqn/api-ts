@@ -49,33 +49,28 @@ interface FacebookPermissionsData {
   data: FacebookPermission[];
 }
 
+// social-auth.middleware.ts
 async function verifyFacebookToken(token: string): Promise<{isValid: boolean; permissions?: string[]}> {
   try {
-    // First, verify the token
-    const debugTokenUrl = new URL('https://graph.facebook.com/debug_token');
-    debugTokenUrl.searchParams.append('input_token', token);
-    debugTokenUrl.searchParams.append('access_token', `${process.env.FACEBOOK_CLIENT_ID}|${process.env.FACEBOOK_CLIENT_SECRET}`);
-
-    const tokenResponse = await fetch(debugTokenUrl.toString());
-    if (!tokenResponse.ok) {
-      throw new Error(`Facebook Debug Token API error: ${tokenResponse.status}`);
-    }
-
-    const tokenData = await tokenResponse.json() as FacebookTokenData;
-    if (!tokenData.data?.is_valid) {
+    // Verify token structure first
+    if (!token.match(/^[a-zA-Z0-9_-]+$/)) {
       return { isValid: false };
     }
 
-    // Then, check permissions
-    const permissionsUrl = new URL(`https://graph.facebook.com/me/permissions`);
-    permissionsUrl.searchParams.append('access_token', token);
+    const debugTokenUrl = `https://graph.facebook.com/debug_token?input_token=${token}&access_token=${process.env.FACEBOOK_CLIENT_ID}|${process.env.FACEBOOK_CLIENT_SECRET}`;
+    
+    const [tokenResponse, permissionsResponse] = await Promise.all([
+      fetch(debugTokenUrl),
+      fetch(`https://graph.facebook.com/me/permissions?access_token=${token}`)
+    ]);
 
-    const permissionsResponse = await fetch(permissionsUrl.toString());
-    if (!permissionsResponse.ok) {
-      throw new Error(`Facebook Permissions API error: ${permissionsResponse.status}`);
+    if (!tokenResponse.ok || !permissionsResponse.ok) {
+      return { isValid: false };
     }
 
+    const tokenData = await tokenResponse.json() as FacebookTokenData;
     const permissionsData = await permissionsResponse.json() as FacebookPermissionsData;
+
     const grantedPermissions = permissionsData.data
       .filter((perm) => perm.status === 'granted')
       .map((perm) => perm.permission);
@@ -85,7 +80,7 @@ async function verifyFacebookToken(token: string): Promise<{isValid: boolean; pe
     );
 
     return {
-      isValid: hasRequiredPermissions,
+      isValid: tokenData.data?.is_valid && hasRequiredPermissions,
       permissions: grantedPermissions
     };
   } catch (error) {
