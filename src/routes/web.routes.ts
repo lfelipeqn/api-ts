@@ -17,6 +17,13 @@ import { Cache } from '../services/Cache';
 const router = Router();
 const sequelize = getSequelize();
 
+function generateSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+}
+
 // GET /api/categories - Get all active product lines (categories)
 router.get('/categories', async (req, res) => {
   try {
@@ -51,7 +58,6 @@ router.get('/categories/:id/brands', async (req, res) => {
     const categoryId = parseInt(req.params.id);
     const cache = Cache.getInstance();
     
-    // Try to get from cache first
     const cacheKey = `category:${categoryId}:brands`;
     const cachedBrands = await cache.get<any>(cacheKey);
     
@@ -62,7 +68,6 @@ router.get('/categories/:id/brands', async (req, res) => {
       });
     }
 
-    // If not in cache, get from view
     const sequelize = getSequelize();
     const brands = await sequelize.query(`
       SELECT 
@@ -78,7 +83,6 @@ router.get('/categories/:id/brands', async (req, res) => {
       type: QueryTypes.SELECT
     });
 
-    // Process brands and add image URLs
     const processedBrands = await Promise.all(brands.map(async (brand: any) => {
       let image;
       if (brand.file_id) {
@@ -98,12 +102,12 @@ router.get('/categories/:id/brands', async (req, res) => {
       return {
         id: brand.brand_id,
         name: brand.brand_name,
+        slug: generateSlug(brand.brand_name),
         image: image || undefined,
         active_products_count: brand.active_products_count
       };
     }));
 
-    // Cache for 5 minutes
     await cache.set(cacheKey, processedBrands, 300);
 
     res.json({
@@ -155,7 +159,13 @@ router.get('/brands', async (req, res) => {
     });
 
     const brandsWithImages = await Promise.all(
-      brands.map(brand => brand.toDetailedJSON())
+      brands.map(async brand => {
+        const brandData = await brand.toDetailedJSON();
+        return {
+          ...brandData,
+          slug: generateSlug(brand.name)
+        };
+      })
     );
 
     res.json({
