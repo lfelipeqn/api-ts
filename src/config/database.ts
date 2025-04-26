@@ -25,6 +25,10 @@ import { PaymentMethodConfig } from '../models/PaymentMethodConfig';
 import { GatewayConfig } from '../models/GatewayConfig';
 import { Order } from '../models/Order';
 import { OrderPriceHistory } from '../models/OrderPriceHistory';
+import { Role } from '../models/Role';
+import { Permission } from '../models/Permission';
+import { UserRole } from '../models/UserRole';
+import { RolePermission } from '../models/RolePermission';
 import { Models } from '../types/database';
 
 
@@ -61,6 +65,10 @@ export const initializeDatabase = () => {
     GatewayConfig: GatewayConfig.initModel(sequelize),
     Order: Order.initModel(sequelize),
     OrderPriceHistory: OrderPriceHistory.initModel(sequelize),
+    Role: Role.initModel(sequelize),
+    Permission: Permission.initModel(sequelize),
+    UserRole: UserRole.initModel(sequelize),
+    RolePermission: RolePermission.initModel(sequelize),
   };
 
   // Then initialize associations

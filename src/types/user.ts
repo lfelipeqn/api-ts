@@ -16,6 +16,8 @@ export interface UserAttributes {
   token: string | null;
   city_id: number | null;
   user_id: number | null;
+  created_at: Date;
+  updated_at: Date;
 }
 
 export interface UserCreationAttributes extends Omit<UserAttributes, 'id'> {

@@ -9,6 +9,7 @@ import { User } from '../models/User';
 import { Person } from '../models/Person';
 import { PasswordHandler } from '../services/PasswordHandler';
 import { Transaction } from 'sequelize';
+import { RoleService } from '../services/RoleService';
 
 import { Order } from '../models/Order';
 import { OrderPriceHistory } from '../models/OrderPriceHistory';
@@ -21,6 +22,7 @@ import { Department } from '../models/Department';
 import { PaymentMethodConfig } from '../models/PaymentMethodConfig';
 
 const router = Router();
+const roleService = RoleService.getInstance();
 
 // Validation schemas
 const loginSchema = z.object({
@@ -81,10 +83,6 @@ const validateRequest = (schema: z.ZodSchema) => async (req: Request, res: Respo
  * @desc Authenticate user & get session token
  * @access Public
  */
-// In auth.routes.ts
-
-// In auth.routes.ts
-
 router.post('/login', validateRequest(loginSchema), async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
@@ -344,6 +342,7 @@ router.post('/register', validateRequest(registerSchema), async (req: Request, r
       // Check if email already exists
       const existingUser = await User.findOne({
         where: { email: req.body.person.email },
+        include: ['person'],
         transaction,
         lock: Transaction.LOCK.UPDATE
       });
@@ -379,8 +378,13 @@ router.post('/register', validateRequest(registerSchema), async (req: Request, r
         social_network_name: null,
         social_network_user_id: null,
         city_id: null,
-        user_id: null
+        user_id: null,
+        created_at: new Date(),
+        updated_at: new Date()
       }, { transaction });
+
+      // Assign default customer role to the user
+      await roleService.assignDefaultRoleToUser(user, transaction);
 
       // Generate token in a separate operation after commit
       await transaction.commit();

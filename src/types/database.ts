@@ -1,3 +1,4 @@
+// src/types/database.ts
 import { Sequelize } from 'sequelize';
 import { Product } from '../models/Product';
 import { Brand } from '../models/Brand';
@@ -24,10 +25,13 @@ import { PaymentMethodConfig } from '../models/PaymentMethodConfig';
 import { GatewayConfig } from '../models/GatewayConfig';
 import { Order } from '../models/Order';
 import { OrderPriceHistory } from '../models/OrderPriceHistory';
+import { Role } from '../models/Role';
+import { Permission } from '../models/Permission';
+import { UserRole } from '../models/UserRole';
+import { RolePermission } from '../models/RolePermission';
 
 
 export interface Models {
-
   City: typeof City;
   Department: typeof Department;
   Address: typeof Address;
@@ -53,7 +57,10 @@ export interface Models {
   GatewayConfig: typeof GatewayConfig;
   Order: typeof Order;
   OrderPriceHistory: typeof OrderPriceHistory;
-  
+  Role: typeof Role;
+  Permission: typeof Permission;
+  UserRole: typeof UserRole;
+  RolePermission: typeof RolePermission;
 }
 
 export interface Database {

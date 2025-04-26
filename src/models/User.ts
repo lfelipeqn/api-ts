@@ -1,8 +1,14 @@
+// src/models/User.ts - Modified to add roles and permissions
+
 import { Model, DataTypes, Sequelize, Association, HasOneGetAssociationMixin,
   ModelStatic, InferAttributes, 
   InferCreationAttributes,
   CreationOptional,
-  NonAttribute
+  NonAttribute,
+  BelongsToManyAddAssociationMixin,
+  BelongsToManyGetAssociationsMixin,
+  BelongsToManySetAssociationsMixin,
+  BelongsToManyHasAssociationMixin
  } from 'sequelize';
 import { Person } from './Person';
 import { Agency } from './Agency';
@@ -11,6 +17,8 @@ import { City } from './City';
 import { Address } from './Address';
 import { UserSessionManager } from '../services/UserSessionManager';
 import { PasswordHandler } from '../services/PasswordHandler';
+import { Role } from './Role';
+import { Permission } from './Permission';
 import { 
   UserAttributes, 
   UserCreationAttributes, 
@@ -21,6 +29,7 @@ import {
 } from '../types/user';
 import bcrypt from 'bcrypt';
 
+// Update the User class to include timestamps
 export class User extends Model<UserAttributes, UserCreationAttributes> {
   declare id: number;
   declare email: string;
@@ -36,6 +45,8 @@ export class User extends Model<UserAttributes, UserCreationAttributes> {
   declare token: string | null;
   declare city_id: number | null;
   declare user_id: number | null;
+  declare created_at: Date;
+  declare updated_at: Date;
 
   // Associations
   declare readonly person?: Person;
@@ -43,8 +54,15 @@ export class User extends Model<UserAttributes, UserCreationAttributes> {
   declare readonly productLine?: ProductLine;
   declare readonly city?: City;
   declare readonly addresses?: Address[];
+  declare readonly roles?: Role[];
 
   declare getPerson: HasOneGetAssociationMixin<Person>;
+  
+  // Role associations
+  declare getRoles: BelongsToManyGetAssociationsMixin<Role>;
+  declare addRole: BelongsToManyAddAssociationMixin<Role, number>;
+  declare setRoles: BelongsToManySetAssociationsMixin<Role, number>;
+  declare hasRole: BelongsToManyHasAssociationMixin<Role, number>;
 
   public static associations: {
     person: Association<User, Person>;
@@ -52,6 +70,7 @@ export class User extends Model<UserAttributes, UserCreationAttributes> {
     productLine: Association<User, ProductLine>;
     city: Association<User, City>;
     addresses: Association<User, Address>;
+    roles: Association<User, Role>;
   };
 
   static getStates(): UserState[] {
@@ -145,11 +164,19 @@ export class User extends Model<UserAttributes, UserCreationAttributes> {
       user_id: {
         type: DataTypes.INTEGER.UNSIGNED,
         allowNull: true,
+      },
+      created_at: {
+        type: DataTypes.DATE,
+        allowNull: false,
+      },
+      updated_at: {
+        type: DataTypes.DATE,
+        allowNull: false,
       }
     }, {
       sequelize,
       tableName: 'users',
-      timestamps: false,
+      timestamps: true,  // Change from false to true
       underscored: true,
       indexes: [
         {
@@ -189,12 +216,19 @@ export class User extends Model<UserAttributes, UserCreationAttributes> {
     ProductLine: typeof ProductLine;
     City: typeof City;
     Address: typeof Address;
+    Role: typeof Role;
   }) {
     User.belongsTo(models.Person, { foreignKey: 'person_id', as: 'person' });
     User.belongsTo(models.Agency, { foreignKey: 'agency_id', as: 'agency' });
     User.belongsTo(models.ProductLine, { foreignKey: 'product_line_id', as: 'productLine' });
     User.belongsTo(models.City, { foreignKey: 'city_id', as: 'city' });
     User.hasMany(models.Address, { foreignKey: 'user_id', as: 'addresses' });
+    User.belongsToMany(models.Role, {
+      through: 'user_roles',
+      foreignKey: 'user_id',
+      otherKey: 'role_id',
+      as: 'roles'
+    });
   }
 
   // Session Management Methods
@@ -213,9 +247,7 @@ export class User extends Model<UserAttributes, UserCreationAttributes> {
     return sessionManager.destroyUserSessions(this.id);
   }
 
-  // Authentication Methods}
-  // In User model
-
+  // Authentication Methods
   async verifyPassword(password: string): Promise<{
     isValid: boolean;
     requiresNewPassword: boolean;
@@ -280,10 +312,10 @@ export class User extends Model<UserAttributes, UserCreationAttributes> {
     await this.destroyAllSessions();
   }
 
-   /**
+  /**
    * Create a password reset token and store it in the user model
    */
-   async createPasswordResetToken(): Promise<string> {
+  async createPasswordResetToken(): Promise<string> {
     const token = PasswordHandler.generateResetToken();
     const tokenData: TokenData = {
       token,
@@ -328,7 +360,6 @@ export class User extends Model<UserAttributes, UserCreationAttributes> {
     await this.update({ token: null });
   }
 
-
   // User Status Methods
   async activate(): Promise<void> {
     await this.update({ state: 'ACTIVE' });
@@ -362,6 +393,34 @@ export class User extends Model<UserAttributes, UserCreationAttributes> {
       ]
     });
     return this;
+  }
+
+  // New method to load user with roles and permissions
+  async reloadWithRolesAndPermissions(): Promise<User> {
+    await this.reload({
+      include: [
+        {
+          model: Role,
+          as: 'roles',
+          include: [{
+            model: Permission,
+            as: 'permissions'
+          }]
+        }
+      ]
+    });
+    return this;
+  }
+
+  // Check if user has a specific role
+  async hasRoleByName(roleName: string): Promise<boolean> {
+    await this.reloadWithRolesAndPermissions();
+    return !!this.roles?.some(role => role.name === roleName);
+  }
+
+  // Check if user is an administrator
+  async isAdmin(): Promise<boolean> {
+    return this.hasRoleByName('ADMINISTRATOR');
   }
 
   async updateProfile(data: UserUpdateData, imageProfile?: Express.Multer.File): Promise<void> {
