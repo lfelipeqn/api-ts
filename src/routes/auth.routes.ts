@@ -10,6 +10,7 @@ import { Person } from '../models/Person';
 import { PasswordHandler } from '../services/PasswordHandler';
 import { Transaction } from 'sequelize';
 import { RoleService } from '../services/RoleService';
+import { PermissionService } from '../services/PermissionService';
 
 import { Order } from '../models/Order';
 import { OrderPriceHistory } from '../models/OrderPriceHistory';
@@ -659,6 +660,31 @@ router.get('/orders/:id', authMiddleware, async (req: AuthenticatedRequest, res:
     res.status(500).json({
       status: 'error',
       message: error instanceof Error ? error.message : 'Failed to fetch order details'
+    });
+  }
+});
+
+/**
+ * @route GET /api/auth/permissions
+ * @desc Get current user's permissions
+ * @access Protected
+ */
+router.get('/permissions', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const permissionService = PermissionService.getInstance();
+    const permissions = await permissionService.getUserPermissions(req.user!);
+
+    res.json({
+      status: 'success',
+      data: {
+        permissions
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching user permissions:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to fetch permissions'
     });
   }
 });

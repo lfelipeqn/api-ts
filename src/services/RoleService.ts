@@ -4,6 +4,7 @@ import { Role } from '../models/Role';
 import { Permission } from '../models/Permission';
 import { User } from '../models/User';
 import { Transaction } from 'sequelize';
+import { PermissionService } from './PermissionService';
 
 export class RoleService {
   private static instance: RoleService;
@@ -182,5 +183,30 @@ export class RoleService {
     }
 
     return false;
+  }
+
+  /**
+   * Update user roles and invalidate cache
+   */
+  public async updateUserRoles(user: User, roleIds: number[], transaction?: Transaction): Promise<void> {
+    // First, remove all existing roles
+    await user.setRoles([], { transaction });
+    
+      // Then add the new roles
+    if (roleIds.length > 0) {
+      const roles = await Role.findAll({
+        where: { id: roleIds },
+        transaction
+      });
+      
+      // Add each role individually
+      for (const role of roles) {
+        await user.addRole(role, { transaction });
+      }
+    }
+    
+    // Invalidate the permissions cache for this user
+    const permissionService = PermissionService.getInstance();
+    await permissionService.invalidateUserPermissionCache(user.id);
   }
 }
