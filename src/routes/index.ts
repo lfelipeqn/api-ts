@@ -13,6 +13,7 @@ import accountRoutes from './account.routes';
 import emailRoutes from './email.routes';
 import googleMerchantRoutes from './google-merchant.routes';
 import socialAuthRoutes from './social-auth.routes';
+import adminRoutes from './admin.routes';
 
 const router = Router();
 
@@ -38,6 +39,7 @@ apiRouter.use('/checkout', checkoutRoutes);
 apiRouter.use('/account', accountRoutes);
 apiRouter.use('/email', emailRoutes);
 apiRouter.use('/google-merchant', googleMerchantRoutes);
+apiRouter.use('/admin', adminRoutes); // This now only contains admin-specific routes
 
 // Global error handler - this should be the last middleware
 apiRouter.use((err: any, req: Request, res: Response, next: NextFunction) => {

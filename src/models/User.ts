@@ -8,7 +8,11 @@ import { Model, DataTypes, Sequelize, Association, HasOneGetAssociationMixin,
   BelongsToManyAddAssociationMixin,
   BelongsToManyGetAssociationsMixin,
   BelongsToManySetAssociationsMixin,
-  BelongsToManyHasAssociationMixin
+  BelongsToManyHasAssociationMixin,
+  Optional,
+  BelongsToGetAssociationMixin,
+  BelongsToSetAssociationMixin,
+  HasManyGetAssociationsMixin
  } from 'sequelize';
 import { Person } from './Person';
 import { Agency } from './Agency';
@@ -423,6 +427,32 @@ export class User extends Model<UserAttributes, UserCreationAttributes> {
     return this.hasRoleByName('ADMINISTRATOR');
   }
 
+  // Add this method to your User class
+
+  /**
+   * Get all permissions assigned to user through their roles
+   */
+  async getAllPermissions() {
+    const roles = await this.getRoles({
+      include: [{
+        association: 'permissions'
+      }]
+    });
+    
+    // Flatten the array of permission arrays and remove duplicates
+    const permissionMap = new Map();
+    
+    for (const role of roles) {
+      if (!role.permissions) continue;
+      
+      for (const permission of role.permissions) {
+        permissionMap.set(permission.id, permission);
+      }
+    }
+    
+    return Array.from(permissionMap.values());
+  }
+
   async updateProfile(data: UserUpdateData, imageProfile?: Express.Multer.File): Promise<void> {
     const t = await this.sequelize!.transaction();
 
@@ -534,4 +564,6 @@ export class User extends Model<UserAttributes, UserCreationAttributes> {
            allowedActions[this.state]?.includes(action) || 
            false;
   }
+
+  
 }

@@ -21,6 +21,7 @@ import { Agency } from '../models/Agency';
 import { City } from '../models/City';
 import { Department } from '../models/Department';
 import { PaymentMethodConfig } from '../models/PaymentMethodConfig';
+import { Role } from '../models/Role';
 
 const router = Router();
 const roleService = RoleService.getInstance();
@@ -89,6 +90,7 @@ router.post('/login', validateRequest(loginSchema), async (req: Request, res: Re
     const { email, password } = req.body;
     const { User } = getModels();
 
+    // Find user by email (keep existing code)
     const user = await User.findOne({
       where: { email },
       include: [{
@@ -97,6 +99,7 @@ router.post('/login', validateRequest(loginSchema), async (req: Request, res: Re
       }]
     });
 
+    // Keep your existing user validation code
     if (!user) {
       return res.status(401).json({
         success: false,
@@ -148,9 +151,15 @@ router.post('/login', validateRequest(loginSchema), async (req: Request, res: Re
       });
     }
 
+    // Create session
     const sessionId = await user.createSession();
     const userInfo = await user.getInfo();
+    
+    // Check if user has admin role
+    const userRoles = await user.getRoles();
+    const isAdmin = userRoles.some(role => role.name === 'ADMINISTRATOR');
 
+    // Return user info with isAdmin flag
     return res.status(200).json({
       success: true,
       data: {
@@ -162,6 +171,7 @@ router.post('/login', validateRequest(loginSchema), async (req: Request, res: Re
             first_name: userInfo.person.first_name,
             last_name: userInfo.person.last_name,
           } : null,
+          isAdmin: isAdmin
         }
       }
     });
@@ -300,6 +310,17 @@ router.get('/me', authMiddleware, async (req: AuthenticatedRequest, res: Respons
   try {
     const user = req.user!;
     const userInfo = await user.getInfo();
+    
+    // Get user roles
+    const roles = await user.getRoles();
+    const isAdmin = roles.some(role => role.name === 'ADMINISTRATOR');
+    
+    // Get permissions if admin
+    let permissions: string[] = [];
+    if (isAdmin) {
+      const permissionService = PermissionService.getInstance();
+      permissions = await permissionService.getUserPermissions(user);
+    }
 
     res.json({
       status: 'success',
@@ -311,6 +332,8 @@ router.get('/me', authMiddleware, async (req: AuthenticatedRequest, res: Respons
             first_name: userInfo.person.first_name,
             last_name: userInfo.person.last_name,
           } : null,
+          isAdmin: isAdmin,
+          ...(isAdmin && { permissions })
         }
       }
     });
