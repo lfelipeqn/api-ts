@@ -110,35 +110,55 @@ router.post('/login', validateRequest(loginSchema), async (req: Request, res: Re
       });
     }
 
-    if (!user.isActive()) {
-      return res.status(403).json({
-        success: false,
-        error: {
-          code: 'ACCOUNT_INACTIVE',
-          message: 'Account is not active',
-          state: user.state
-        }
-      });
-    }
+    // Add legacy password detection logic
+    const isLaravelFormat = user.password.startsWith('$2y$');
+    let isValid = false;
 
-    const { isValid, requiresNewPassword } = await user.verifyPassword(password);
-
-    if (requiresNewPassword) {
-      const resetToken = await user.createPasswordResetToken();
+    if (isLaravelFormat) {
+      // Validate using Laravel-compatible method
+      const bcrypt = require('bcrypt');
+      // Convert Laravel $2y$ format to Node.js $2a$ format if needed
+      const nodeCompatibleHash = user.password.replace(/^\$2y\$/, '$2a$');
+      isValid = await bcrypt.compare(password, nodeCompatibleHash);
       
-      return res.json({
-        success: false,
-        error: {
-          code: 'PASSWORD_RESET_REQUIRED',
-          message: 'Password reset required'
-        },
-        data: {
-          userId: user.id,
-          email: user.email,
-          resetToken,
-          name: user.person?.first_name || null
-        }
-      });
+      if (isValid) {
+        // Password valid but using old format - force reset
+        const resetToken = await user.createPasswordResetToken();
+        
+        return res.json({
+          success: true,
+          data: {
+            requiresPasswordUpdate: true,
+            userId: user.id,
+            email: user.email,
+            resetToken,
+            name: user.person?.first_name || null
+          },
+          message: 'Please update your password to continue'
+        });
+      }
+    } else {
+      // Use existing password verification for TypeScript-created passwords
+      const { isValid: newIsValid, requiresNewPassword } = await user.verifyPassword(password);
+      isValid = newIsValid;
+      
+      if (requiresNewPassword) {
+        const resetToken = await user.createPasswordResetToken();
+        
+        return res.json({
+          success: false,
+          error: {
+            code: 'PASSWORD_RESET_REQUIRED',
+            message: 'Password reset required'
+          },
+          data: {
+            userId: user.id,
+            email: user.email,
+            resetToken,
+            name: user.person?.first_name || null
+          }
+        });
+      }
     }
 
     if (!isValid) {
@@ -147,6 +167,17 @@ router.post('/login', validateRequest(loginSchema), async (req: Request, res: Re
         error: {
           code: 'INVALID_CREDENTIALS',
           message: 'Invalid credentials'
+        }
+      });
+    }
+
+    if (!user.isActive()) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCOUNT_INACTIVE',
+          message: 'Account is not active',
+          state: user.state
         }
       });
     }

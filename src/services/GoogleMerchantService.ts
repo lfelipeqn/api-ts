@@ -13,11 +13,25 @@ import { roundToThousand } from '../utils/price';
 import { Cache } from './Cache';
 import path from 'path';
 import fs from 'fs';
+import { v4 as uuidv4 } from 'uuid';
 
 interface ProductProductDetail {
   sectionName: string;
   attributeName: string;
   attributeValue: string;
+}
+
+interface UploadProgress {
+  id: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  totalProducts: number;
+  processedProducts: number;
+  successCount: number;
+  failedCount: number;
+  errors: Array<{reference: string; error: string}>;
+  startedAt: string;
+  completedAt?: string;
+  currentProduct?: string;
 }
 
 interface GoogleProductData {
@@ -360,11 +374,13 @@ export class GoogleMerchantService {
   }
 
   public async uploadAllProducts(
-    onProgress?: (progress: { current: number; total: number }) => void
+    onProgress?: (progress: { current: number; total: number }) => void,
+    uploadId?: string
   ): Promise<{
     success: number;
     failed: number;
-    errors: Array<{reference: string; error: string}>
+    errors: Array<{reference: string; error: string}>;
+    uploadId: string;
   }> {
     const products = await Product.findAll({
       where: { state: true },
@@ -375,30 +391,100 @@ export class GoogleMerchantService {
     let failed = 0;
     const errors: Array<{reference: string; error: string}> = [];
     const total = products.length;
+    const progressId = uploadId || uuidv4();
+    const cache = Cache.getInstance();
+    
+    // Initialize progress tracking
+    const initialProgress: UploadProgress = {
+      id: progressId,
+      status: 'processing',
+      totalProducts: total,
+      processedProducts: 0,
+      successCount: 0,
+      failedCount: 0,
+      errors: [],
+      startedAt: new Date().toISOString()
+    };
+    
+    await cache.set(`google-merchant:upload:${progressId}`, JSON.stringify(initialProgress), 3600); // 1 hour TTL
   
     for (let i = 0; i < products.length; i++) {
       const product = products[i];
+      
+      // Update current product in progress
+      const currentProgress: UploadProgress = {
+        id: progressId,
+        status: 'processing',
+        totalProducts: total,
+        processedProducts: i,
+        successCount: success,
+        failedCount: failed,
+        errors: [...errors],
+        startedAt: initialProgress.startedAt,
+        currentProduct: `${product.reference} (ID: ${product.id})`
+      };
+      
+      await cache.set(`google-merchant:upload:${progressId}`, JSON.stringify(currentProgress), 3600);
+      
       try {
         await this.uploadProduct(product);
         success++;
         console.log(`Successfully uploaded product ${product.id} - ${product.reference}`);
       } catch (error) {
         failed++;
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         console.error(`Failed to upload product ${product.id} - ${product.reference}:`, error);
-        errors.push({
-          reference: product.reference,
-          error: error instanceof Error ? error.message : 'Unknown error'
-        });
+        
+        // Retry logic for certain errors
+        if (errorMessage.includes('rate limit') || errorMessage.includes('quota')) {
+          console.log(`Rate limit hit, waiting 5 seconds before continuing...`);
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          
+          // Try once more
+          try {
+            await this.uploadProduct(product);
+            success++;
+            failed--; // Correct the failed count since this one succeeded
+            console.log(`Retry successful for product ${product.id} - ${product.reference}`);
+          } catch (retryError) {
+            errors.push({
+              reference: product.reference,
+              error: retryError instanceof Error ? retryError.message : 'Unknown error after retry'
+            });
+          }
+        } else {
+          errors.push({
+            reference: product.reference,
+            error: errorMessage
+          });
+        }
       }
   
       if (onProgress) {
         onProgress({ current: i + 1, total });
       }
   
-      await new Promise(resolve => setTimeout(resolve, 100));
+      // Add delay between requests to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 200));
     }
-  
-    return { success, failed, errors };
+    
+    // Update final progress
+    const finalProgress: UploadProgress = {
+      id: progressId,
+      status: 'completed',
+      totalProducts: total,
+      processedProducts: total,
+      successCount: success,
+      failedCount: failed,
+      errors,
+      startedAt: initialProgress.startedAt,
+      completedAt: new Date().toISOString()
+    };
+    
+    await cache.set(`google-merchant:upload:${progressId}`, JSON.stringify(finalProgress), 7200); // Keep final result for 2 hours
+    
+    console.log(`Upload completed - Success: ${success}, Failed: ${failed}`);
+    return { success, failed, errors, uploadId: progressId };
   }
 
   public async syncInventoryAndPrices(
@@ -439,5 +525,58 @@ export class GoogleMerchantService {
     }
   
     return { success, failed, errors };
+  }
+
+  public async getUploadProgress(uploadId: string): Promise<UploadProgress | null> {
+    try {
+      const cache = Cache.getInstance();
+      const progressData = await cache.get<UploadProgress>(`google-merchant:upload:${uploadId}`);
+      
+      return progressData;
+    } catch (error) {
+      console.error('Error getting upload progress:', error);
+      return null;
+    }
+  }
+
+  public async cancelUpload(uploadId: string): Promise<boolean> {
+    try {
+      const cache = Cache.getInstance();
+      const progress = await cache.get<UploadProgress>(`google-merchant:upload:${uploadId}`);
+      
+      if (!progress) {
+        return false;
+      }
+      
+      if (progress.status === 'processing') {
+        const cancelledProgress: UploadProgress = {
+          ...progress,
+          status: 'failed',
+          completedAt: new Date().toISOString()
+        };
+        
+        await cache.set(`google-merchant:upload:${uploadId}`, JSON.stringify(cancelledProgress), 7200);
+        return true;
+      }
+      
+      return false;
+    } catch (error) {
+      console.error('Error cancelling upload:', error);
+      return false;
+    }
+  }
+
+  public async getAllActiveUploads(): Promise<UploadProgress[]> {
+    try {
+      const cache = Cache.getInstance();
+      const entries = await cache.findByPattern<UploadProgress>('google-merchant:upload:*');
+      
+      const uploads: UploadProgress[] = entries.map(entry => entry.value);
+      
+      return uploads.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+    } catch (error) {
+      console.error('Error getting active uploads:', error);
+      return [];
+    }
   }
 }

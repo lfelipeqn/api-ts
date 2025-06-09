@@ -5,6 +5,7 @@ import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middlew
 import { GoogleMerchantService } from '../services/GoogleMerchantService';
 import { Product } from '../models/Product';
 import { Cache } from '../services/Cache';
+import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
 
@@ -13,24 +14,38 @@ router.use(authMiddleware);
 
 // Upload all products to Google Merchant Center
 router.post('/upload-all', async (req: AuthenticatedRequest, res) => {
-  res.json({
-    status: 'success',
-    message: 'Upload process started',
-    data: {
-      started_at: new Date().toISOString(),
-      status: 'processing'
-    }
-  });
-
   try {
+    const uploadId = uuidv4();
     const merchantService = GoogleMerchantService.getInstance();
-    const result = await merchantService.uploadAllProducts(progress => {
-      console.log(`Upload progress: ${progress.current}/${progress.total} products processed`);
+    
+    // Send initial response with upload ID for tracking
+    res.json({
+      status: 'success',
+      message: 'Upload process started',
+      data: {
+        uploadId,
+        started_at: new Date().toISOString(),
+        status: 'processing'
+      }
     });
 
-    console.log('Upload completed:', result);
+    // Start upload process in background
+    merchantService.uploadAllProducts(
+      progress => {
+        console.log(`Upload progress: ${progress.current}/${progress.total} products processed`);
+      },
+      uploadId
+    ).then(result => {
+      console.log('Upload completed:', result);
+    }).catch(error => {
+      console.error('Background upload error:', error);
+    });
   } catch (error) {
-    console.error('Background upload error:', error);
+    console.error('Error starting upload:', error);
+    res.status(500).json({
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Failed to start upload'
+    });
   }
 });
 
@@ -125,6 +140,79 @@ router.delete('/products/:id', async (req: AuthenticatedRequest, res) => {
     res.status(500).json({
       status: 'error',
       message: error instanceof Error ? error.message : 'Failed to delete product'
+    });
+  }
+});
+
+// Get upload progress
+router.get('/upload-progress/:uploadId', async (req: AuthenticatedRequest, res) => {
+  try {
+    const { uploadId } = req.params;
+    const merchantService = GoogleMerchantService.getInstance();
+    const progress = await merchantService.getUploadProgress(uploadId);
+    
+    if (!progress) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'Upload progress not found'
+      });
+    }
+    
+    res.json({
+      status: 'success',
+      data: progress
+    });
+  } catch (error) {
+    console.error('Error getting upload progress:', error);
+    res.status(500).json({
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Failed to get upload progress'
+    });
+  }
+});
+
+// Cancel upload
+router.post('/upload-cancel/:uploadId', async (req: AuthenticatedRequest, res) => {
+  try {
+    const { uploadId } = req.params;
+    const merchantService = GoogleMerchantService.getInstance();
+    const cancelled = await merchantService.cancelUpload(uploadId);
+    
+    if (!cancelled) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'Upload not found or cannot be cancelled'
+      });
+    }
+    
+    res.json({
+      status: 'success',
+      message: 'Upload cancelled successfully'
+    });
+  } catch (error) {
+    console.error('Error cancelling upload:', error);
+    res.status(500).json({
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Failed to cancel upload'
+    });
+  }
+});
+
+// Get all active uploads
+router.get('/uploads', async (req: AuthenticatedRequest, res) => {
+  try {
+    const merchantService = GoogleMerchantService.getInstance();
+    const uploads = await merchantService.getAllActiveUploads();
+    
+    res.json({
+      status: 'success',
+      data: uploads
+    });
+  } catch (error) {
+    console.error('Error getting active uploads:', error);
+    res.status(500).json({
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Failed to get active uploads'
     });
   }
 });

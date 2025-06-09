@@ -12,6 +12,8 @@ export interface AuthenticatedRequest extends Request {
   user?: User;
   sessionId?: string;
   cartSessionId?: string;
+  token?: string;
+  viewOwnOnly?: boolean;
 }
 
 export const authMiddleware = async (
